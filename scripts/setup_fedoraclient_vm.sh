@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Variables
-VMID=103
+VM_ID=103
 VMNAME="fedora-client"
 ISO_STORAGE="local"
 ISO_FILE="Fedora-Workstation-Live-x86_64-41-1.4.iso"
