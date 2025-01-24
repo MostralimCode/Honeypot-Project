@@ -1,7 +1,7 @@
 import requests
 
 # Configuration de l'API pfSense
-PFSENSE_URL = "https://192.168.2.1/api/v1"  # Remplacez par l'adresse IP du LAN de pfSense
+PFSENSE_URL = "https://192.168.2.1/api/v1"  
 API_KEY = "votre_api_key"
 API_SECRET = "votre_api_secret"
 HEADERS = {
