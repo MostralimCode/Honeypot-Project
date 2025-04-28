@@ -1,11 +1,11 @@
 #!/bin/bash
 
-VM_ID=105
+VM_ID=203
 VMNAME="honeypot"
 ISO_STORAGE="local"
 ISO_FILE="debian-12.5.0-amd64-netinst.iso"
 DISK_SIZE=15G
-BRIDGE="vmbr2"
+BRIDGE="vmbr1"  
 RAM=2048
 CORES=2
 
