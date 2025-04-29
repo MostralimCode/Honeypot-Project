@@ -1,0 +1,77 @@
+# Configuration sécurisée pour OpenSSH Server 
+
+# Changer le port par défaut pour réduire la visibilité
+Port 2222
+
+# Limiter l'écoute à l'interface LAN uniquement
+ListenAddress 192.168.2.115
+
+# Utiliser uniquement le protocole SSH v2
+Protocol 2
+
+# Désactiver la connexion root directe
+PermitRootLogin no
+
+# Limiter le nombre de tentatives d'authentification
+MaxAuthTries 3
+MaxSessions 3
+
+# Durée maximale pour l'authentification (secondes)
+LoginGraceTime 30
+
+# Configuration des clés
+PubkeyAuthentication yes
+AuthorizedKeysFile .ssh/authorized_keys
+
+# Désactiver l'authentification par mot de passe 
+# PasswordAuthentication no
+PasswordAuthentication yes
+
+# Désactiver les autres méthodes d'authentification moins sécurisées
+HostbasedAuthentication no
+IgnoreRhosts yes
+PermitEmptyPasswords no
+ChallengeResponseAuthentication no
+KerberosAuthentication no
+GSSAPIAuthentication no
+
+# Limiter les utilisateurs autorisés à se connecter
+AllowUsers admin
+
+# Timeout pour les sessions inactives (5 minutes)
+ClientAliveInterval 300
+ClientAliveCountMax 2
+
+# Désactiver les fonctionnalités non nécessaires
+X11Forwarding no
+AllowTcpForwarding no
+AllowAgentForwarding no
+PermitTunnel no
+PermitUserRC no
+PermitUserEnvironment no
+
+# Activer les journaux détaillés pour faciliter l'analyse ultérieure
+LogLevel VERBOSE
+
+# Bannière de connexion
+Banner /etc/ssh/banner.txt
+
+# Limiter les algorithmes cryptographiques aux plus sécurisés
+Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr
+MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,hmac-sha2-512,hmac-sha2-256
+KexAlgorithms curve25519-sha256@libssh.org,diffie-hellman-group-exchange-sha256
+
+# Paramètres divers
+UsePAM yes
+PrintMotd no
+AcceptEnv LANG LC_*
+Subsystem sftp internal-sftp
+
+# Utiliser sftp interne et chroot pour limiter l'accès
+Match Group sftponly
+    ChrootDirectory /sftp/%u
+    ForceCommand internal-sftp
+    PermitTunnel no
+    AllowAgentForwarding no
+    AllowTcpForwarding no
+    X11Forwarding no
