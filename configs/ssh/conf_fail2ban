@@ -1,0 +1,62 @@
+[DEFAULT]
+# "bantime" est la durée pendant laquelle une adresse IP sera bannie (en secondes)
+bantime = 3600
+
+# Temps (en secondes) pendant lequel Fail2ban recherche des tentatives répétées
+findtime = 600
+
+# Nombre d'échecs autorisés avant de bannir une adresse IP
+maxretry = 3
+
+# Action à prendre lorsqu'une adresse IP dépasse le seuil
+banaction = iptables-multiport
+
+# Ignorer les adresses IP locales
+ignoreip = 127.0.0.1/8 192.168.2.0/24
+
+# Encodage des fichiers de journalisation
+logencoding = utf-8
+
+# Action par défaut (bannir uniquement)
+action = %(action_)s
+
+# Mode de détection
+backend = auto
+
+# Comportement au démarrage
+startstate = enabled
+
+# Choix du pare-feu
+chain = FORWARD
+banaction = iptables-multiport
+
+#
+# JAILS
+#
+
+[sshd]
+enabled = true
+port = 2222
+filter = sshd
+logpath = /var/log/auth.log
+maxretry = 3
+bantime = 3600
+
+# Configuration plus stricte pour SSH
+[sshd-aggressive]
+enabled = true
+port = 2222
+filter = sshd-aggressive
+logpath = /var/log/auth.log
+maxretry = 2
+bantime = 86400  # 24 heures
+findtime = 300   # 5 minutes
+
+[recidive]
+enabled = true
+filter = recidive
+logpath = /var/log/fail2ban.log
+action = iptables-allports
+bantime = 604800  # 7 jours
+findtime = 86400  # 1 jour
+maxretry = 3
