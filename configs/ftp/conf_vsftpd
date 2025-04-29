@@ -1,0 +1,64 @@
+# Configuration sécurisée de vsftpd
+
+# Paramètres de base
+listen=YES
+listen_ipv6=NO
+listen_port=21
+
+# Désactivation de l'accès anonyme
+anonymous_enable=NO
+anon_upload_enable=NO
+anon_mkdir_write_enable=NO
+
+# Activation des utilisateurs locaux
+local_enable=YES
+write_enable=YES
+local_umask=022
+
+# Restrictions d'accès
+chroot_local_user=YES
+allow_writeable_chroot=NO
+secure_chroot_dir=/var/run/vsftpd/empty
+hide_ids=YES
+
+# Bannières et messages
+ftpd_banner=Serveur FTP sécurisé - Accès restreint
+dirmessage_enable=YES
+
+# Journalisation
+xferlog_enable=YES
+xferlog_std_format=YES
+log_ftp_protocol=YES
+syslog_enable=YES
+dual_log_enable=YES
+vsftpd_log_file=/var/log/vsftpd.log
+
+# Configuration SSL/TLS
+ssl_enable=YES
+ssl_tlsv1=YES
+ssl_sslv2=NO
+ssl_sslv3=NO
+require_ssl_reuse=NO
+ssl_ciphers=HIGH
+rsa_cert_file=/etc/ssl/private/vsftpd.pem
+rsa_private_key_file=/etc/ssl/private/vsftpd.pem
+force_local_data_ssl=YES
+force_local_logins_ssl=YES
+
+# Configuration du mode passif
+pasv_enable=YES
+pasv_min_port=40000
+pasv_max_port=40100
+pasv_address=192.168.2.116
+
+# Restrictions diverses
+tcp_wrappers=YES
+pam_service_name=vsftpd
+userlist_enable=YES
+userlist_file=/etc/vsftpd.userlist
+userlist_deny=NO
+
+# Limitations
+max_clients=10
+max_per_ip=3
+local_max_rate=3072000
