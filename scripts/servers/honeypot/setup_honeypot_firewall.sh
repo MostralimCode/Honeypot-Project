@@ -29,6 +29,10 @@ iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 
 echo "[+] Connexions établies autorisées"
 
+# Configuration de la redirection pour Cowrie
+iptables -t nat -A PREROUTING -p tcp --dport 22 -j REDIRECT --to-port 2222
+echo "[+] Redirection du port 22 vers 2222 pour Cowrie configurée"
+
 # Autoriser les services honeypot (entrée)
 # SSH - Port standard pour attirer les attaquants
 iptables -A INPUT -p tcp --dport 22 -j ACCEPT
