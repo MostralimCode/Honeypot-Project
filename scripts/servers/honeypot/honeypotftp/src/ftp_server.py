@@ -3,16 +3,17 @@
 
 import socket
 import threading
-import logging
+import os
 from datetime import datetime
 from typing import Dict, Tuple, Optional
 
-# Import des modules de vulnérabilités
+# Import des modules de vulnérabilités et logging
 from vulnerabilities.auth_handler import VulnerableAuthHandler
 from vulnerabilities.directory_traversal import DirectoryTraversalVulnerability
+from logging.logger import setup_honeypot_logging
 
-class VulnerableFTPServer:
-    """Serveur FTP avec vulnérabilités intentionnelles pour honeypot"""
+class FTPServer:
+    """Serveur FTP avec vulnérabilités et logging avancé pour honeypot"""
     
     def __init__(self, host: str = '0.0.0.0', port: int = 21):
         self.host = host
@@ -23,17 +24,15 @@ class VulnerableFTPServer:
         self.server_socket = None
         self.clients = []
         
-        # Setup logging
-        logging.basicConfig(
-            filename='logs/ftp_server.log',
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            level=logging.INFO
-        )
-        self.logger = logging.getLogger(__name__)
+        # Initialiser le système de logging
+        self.logger = setup_honeypot_logging()
         
         # Initialiser les vulnérabilités
         self.auth_handler = VulnerableAuthHandler()
         self.traversal_vuln = DirectoryTraversalVulnerability()
+        
+        # Dictionnaire pour suivre les sessions actives
+        self.active_sessions = {}
     
     def start(self):
         """Démarre le serveur FTP"""
@@ -45,7 +44,7 @@ class VulnerableFTPServer:
             self.server_socket.settimeout(1.0)
             
             self.running = True
-            self.logger.info(f"FTP Server started on {self.host}:{self.port}")
+            self.logger.loggers['main'].info(f"FTP Server started on {self.host}:{self.port}")
             print(f"[+] FTP Honeypot listening on {self.host}:{self.port}")
             
             while self.running:
@@ -61,10 +60,10 @@ class VulnerableFTPServer:
                 except socket.timeout:
                     continue
                 except Exception as e:
-                    self.logger.error(f"Error accepting connection: {e}")
+                    self.logger.loggers['main'].error(f"Error accepting connection: {e}")
         
         except Exception as e:
-            self.logger.error(f"Error starting server: {e}")
+            self.logger.loggers['main'].error(f"Error starting server: {e}")
             print(f"[-] Error starting server: {e}")
         finally:
             self.stop()
@@ -72,6 +71,10 @@ class VulnerableFTPServer:
     def stop(self):
         """Arrête le serveur FTP"""
         self.running = False
+        
+        # Terminer toutes les sessions
+        for session_id, session_data in self.active_sessions.items():
+            self.logger.log_session_summary(session_data)
         
         # Fermer toutes les connexions client
         for client_socket, _ in self.clients:
@@ -87,15 +90,35 @@ class VulnerableFTPServer:
             except:
                 pass
         
-        self.logger.info("FTP Server stopped")
+        self.logger.loggers['main'].info("FTP Server stopped")
         print("[-] FTP Server stopped")
     
     def handle_client(self, client_socket: socket.socket, address: Tuple[str, int]):
-        """Gère une connexion client"""
+        """Gère une connexion client avec logging détaillé"""
         ip, port = address
-        self.logger.info(f"New connection from {ip}:{port}")
+        session_id = f"{ip}_{port}_{datetime.now().timestamp()}"
         
-        # État de la session client
+        # Initialiser la session
+        session_data = {
+            'session_id': session_id,
+            'session_start': datetime.now().isoformat(),
+            'ip': ip,
+            'port': port,
+            'username': None,
+            'authenticated': False,
+            'current_dir': '/',
+            'commands': [],
+            'auth_attempts': [],
+            'files_accessed': [],
+            'security_events': []
+        }
+        
+        self.active_sessions[session_id] = session_data
+        
+        # Logger la nouvelle connexion
+        self.logger.log_connection(ip, port)
+        
+        # État interne de la session client
         session = {
             'ip': ip,
             'port': port,
@@ -120,15 +143,23 @@ class VulnerableFTPServer:
                 if not data:
                     break
                 
-                self.logger.info(f"Command from {ip}: {data}")
-                
                 # Parser la commande
                 command_parts = data.split(' ', 1)
                 command = command_parts[0].upper()
                 args = command_parts[1] if len(command_parts) > 1 else ""
                 
+                # Logger la commande
+                self.logger.log_command(ip, session.get('username', 'anonymous'), command, args)
+                
+                # Enregistrer la commande dans la session
+                session_data['commands'].append({
+                    'timestamp': datetime.now().isoformat(),
+                    'command': command,
+                    'args': args
+                })
+                
                 # Traiter la commande
-                response = self.process_command(command, args, session)
+                response = self.process_command(command, args, session, session_data)
                 
                 # Envoyer la réponse
                 if response:
@@ -139,7 +170,7 @@ class VulnerableFTPServer:
                     break
         
         except Exception as e:
-            self.logger.error(f"Error handling client {ip}:{port}: {e}")
+            self.logger.loggers['main'].error(f"Error handling client {ip}:{port}: {e}")
         
         finally:
             # Fermer les sockets
@@ -153,8 +184,12 @@ class VulnerableFTPServer:
                 client_socket.close()
             except:
                 pass
-                
-            self.logger.info(f"Connection closed for {ip}:{port}")
+            
+            # Logger le résumé de session
+            self.logger.log_session_summary(session_data)
+            del self.active_sessions[session_id]
+            
+            self.logger.loggers['main'].info(f"Connection closed for {ip}:{port}")
     
     def send_response(self, client_socket: socket.socket, response: str):
         """Envoie une réponse au client"""
@@ -162,8 +197,8 @@ class VulnerableFTPServer:
             response += '\r\n'
         client_socket.send(response.encode('utf-8'))
     
-    def process_command(self, command: str, args: str, session: Dict) -> str:
-        """Traite une commande FTP"""
+    def process_command(self, command: str, args: str, session: Dict, session_data: Dict) -> str:
+        """Traite une commande FTP avec logging des événements de sécurité"""
         commands = {
             'USER': self.cmd_user,
             'PASS': self.cmd_pass,
@@ -187,22 +222,23 @@ class VulnerableFTPServer:
         
         if command in commands:
             try:
-                return commands[command](args, session)
+                return commands[command](args, session, session_data)
             except Exception as e:
-                self.logger.error(f"Error processing command {command}: {e}")
+                self.logger.loggers['main'].error(f"Error processing command {command}: {e}")
                 return "500 Internal error"
         else:
             return f"502 Command '{command}' not implemented"
     
-    # ========== COMMANDES FTP AVEC VULNÉRABILITÉS ==========
+    # ========== COMMANDES FTP AVEC LOGGING ==========
     
-    def cmd_user(self, username: str, session: Dict) -> str:
+    def cmd_user(self, username: str, session: Dict, session_data: Dict) -> str:
         """Traite la commande USER"""
         session['username'] = username
+        session_data['username'] = username
         return f"331 Username {username} OK. Password required"
     
-    def cmd_pass(self, password: str, session: Dict) -> str:
-        """Traite la commande PASS avec vulnérabilités d'authentification"""
+    def cmd_pass(self, password: str, session: Dict, session_data: Dict) -> str:
+        """Traite la commande PASS avec logging des tentatives"""
         if session.get('username'):
             # Utiliser le gestionnaire d'authentification vulnérable
             authenticated, response = self.auth_handler.authenticate(
@@ -211,19 +247,39 @@ class VulnerableFTPServer:
                 session['ip']
             )
             
+            # Logger la tentative d'authentification
+            self.logger.log_auth_attempt(
+                session['ip'],
+                session['username'],
+                password,
+                authenticated
+            )
+            
+            # Enregistrer dans la session
+            session_data['auth_attempts'].append({
+                'timestamp': datetime.now().isoformat(),
+                'username': session['username'],
+                'success': authenticated
+            })
+            
             if authenticated:
                 session['authenticated'] = True
-                return response
-            else:
-                return response
+                session_data['authenticated'] = True
+            
+            # Détecter le brute force
+            attempts = self.auth_handler.get_login_attempts(session['ip'])
+            if len(attempts) > 10:
+                self.logger.log_brute_force(session['ip'], len(attempts))
+            
+            return response
         else:
             return "503 Login with USER first"
     
-    def cmd_syst(self, args: str, session: Dict) -> str:
+    def cmd_syst(self, args: str, session: Dict, session_data: Dict) -> str:
         """Traite la commande SYST"""
         return "215 UNIX Type: L8"
     
-    def cmd_type(self, type_mode: str, session: Dict) -> str:
+    def cmd_type(self, type_mode: str, session: Dict, session_data: Dict) -> str:
         """Traite la commande TYPE"""
         if type_mode in ['A', 'I']:
             session['transfer_type'] = type_mode
@@ -232,13 +288,13 @@ class VulnerableFTPServer:
         else:
             return "504 Command not implemented for that parameter"
     
-    def cmd_pwd(self, args: str, session: Dict) -> str:
+    def cmd_pwd(self, args: str, session: Dict, session_data: Dict) -> str:
         """Traite la commande PWD"""
         current_dir = session.get('current_dir', '/')
         return f'257 "{current_dir}" is the current directory'
     
-    def cmd_cwd(self, path: str, session: Dict) -> str:
-        """Traite la commande CWD avec vulnérabilité de directory traversal"""
+    def cmd_cwd(self, path: str, session: Dict, session_data: Dict) -> str:
+        """Traite la commande CWD avec détection de directory traversal"""
         current_dir = session.get('current_dir', '/')
         
         # Traiter le chemin avec vulnérabilités potentielles
@@ -246,15 +302,24 @@ class VulnerableFTPServer:
         
         # Mettre à jour le répertoire courant
         session['current_dir'] = new_path
+        session_data['current_dir'] = new_path
         
-        # Enregistrer l'accès si vulnérable
+        # Enregistrer et logger l'accès si vulnérable
         if is_vulnerable:
-            self.traversal_vuln.check_traversal_patterns(path)
+            self.logger.log_directory_traversal(session['ip'], session.get('username', 'anonymous'), path)
+            patterns = self.traversal_vuln.check_traversal_patterns(path)
+            
+            session_data['security_events'].append({
+                'type': 'directory_traversal',
+                'timestamp': datetime.now().isoformat(),
+                'path': path,
+                'detected_patterns': list(patterns.keys())
+            })
         
         return f"250 Directory successfully changed to {new_path}"
     
-    def cmd_list(self, args: str, session: Dict) -> str:
-        """Traite la commande LIST avec vulnérabilité de directory traversal"""
+    def cmd_list(self, args: str, session: Dict, session_data: Dict) -> str:
+        """Traite la commande LIST"""
         current_dir = session.get('current_dir', '/')
         
         # Obtenir le listing avec potentiellement des fichiers sensibles
@@ -262,7 +327,7 @@ class VulnerableFTPServer:
         
         return "150 Here comes the directory listing.\r\n" + "\r\n".join(file_list) + "\r\n226 Directory send OK."
     
-    def cmd_nlst(self, args: str, session: Dict) -> str:
+    def cmd_nlst(self, args: str, session: Dict, session_data: Dict) -> str:
         """Traite la commande NLST"""
         files = [
             ".bash_logout",
@@ -274,31 +339,31 @@ class VulnerableFTPServer:
         
         return "150 Here comes the directory listing.\r\n" + "\r\n".join(files) + "\r\n226 Directory send OK."
     
-    def cmd_noop(self, args: str, session: Dict) -> str:
+    def cmd_noop(self, args: str, session: Dict, session_data: Dict) -> str:
         """Traite la commande NOOP"""
         return "200 Command OK"
     
-    def cmd_quit(self, args: str, session: Dict) -> str:
+    def cmd_quit(self, args: str, session: Dict, session_data: Dict) -> str:
         """Traite la commande QUIT"""
         session['resting'] = True
         return "221 Goodbye"
     
-    def cmd_help(self, args: str, session: Dict) -> str:
+    def cmd_help(self, args: str, session: Dict, session_data: Dict) -> str:
         """Traite la commande HELP"""
         return "214-The following commands are recognized:\n USER PASS CWD PWD LIST NLST RETR STOR DELE MKD RMD TYPE SYST NOOP QUIT\n214 Help OK"
     
-    def cmd_port(self, args: str, session: Dict) -> str:
+    def cmd_port(self, args: str, session: Dict, session_data: Dict) -> str:
         """Traite la commande PORT (mode actif)"""
         session['passive_mode'] = False
         return "200 PORT command successful"
     
-    def cmd_pasv(self, args: str, session: Dict) -> str:
+    def cmd_pasv(self, args: str, session: Dict, session_data: Dict) -> str:
         """Traite la commande PASV (mode passif)"""
         session['passive_mode'] = True
         return "227 Entering Passive Mode (127,0,0,1,123,45)"
     
-    def cmd_retr(self, filename: str, session: Dict) -> str:
-        """Traite la commande RETR avec vulnérabilité de directory traversal"""
+    def cmd_retr(self, filename: str, session: Dict, session_data: Dict) -> str:
+        """Traite la commande RETR avec logging d'accès aux fichiers"""
         current_dir = session.get('current_dir', '/')
         
         # Vérifier si le fichier est sensible
@@ -306,29 +371,95 @@ class VulnerableFTPServer:
         sensitive_content = self.traversal_vuln.get_file_content(full_path)
         
         if sensitive_content:
+            # Logger l'accès à un fichier sensible
+            self.logger.log_security_event(
+                'sensitive_file_access',
+                session['ip'],
+                {
+                    'username': session.get('username', 'anonymous'),
+                    'filename': filename,
+                    'full_path': full_path
+                },
+                'HIGH'
+            )
+            
+            # Enregistrer dans la session
+            session_data['files_accessed'].append({
+                'timestamp': datetime.now().isoformat(),
+                'action': 'read',
+                'filename': filename,
+                'sensitive': True
+            })
+            
             # Simuler le transfert d'un fichier sensible
             return f"150 Opening data connection for {filename}.\r\n{sensitive_content}\r\n226 File send OK"
         else:
+            # Fichier normal
+            self.logger.log_file_access(
+                session['ip'],
+                session.get('username', 'anonymous'),
+                filename,
+                'read',
+                True
+            )
+            
+            session_data['files_accessed'].append({
+                'timestamp': datetime.now().isoformat(),
+                'action': 'read',
+                'filename': filename,
+                'sensitive': False
+            })
+            
             return f"150 Opening data connection for {filename}.\r\n226 File send OK"
     
-    def cmd_stor(self, filename: str, session: Dict) -> str:
-        """Traite la commande STOR"""
+    def cmd_stor(self, filename: str, session: Dict, session_data: Dict) -> str:
+        """Traite la commande STOR avec logging d'upload"""
+        # Logger l'upload
+        self.logger.log_file_access(
+            session['ip'],
+            session.get('username', 'anonymous'),
+            filename,
+            'write',
+            True
+        )
+        
+        session_data['files_accessed'].append({
+            'timestamp': datetime.now().isoformat(),
+            'action': 'write',
+            'filename': filename
+        })
+        
         return f"150 Ok to send data.\r\n226 File received OK"
     
-    def cmd_dele(self, filename: str, session: Dict) -> str:
-        """Traite la commande DELE"""
+    def cmd_dele(self, filename: str, session: Dict, session_data: Dict) -> str:
+        """Traite la commande DELE avec logging de suppression"""
+        # Logger la suppression
+        self.logger.log_file_access(
+            session['ip'],
+            session.get('username', 'anonymous'),
+            filename,
+            'delete',
+            True
+        )
+        
+        session_data['files_accessed'].append({
+            'timestamp': datetime.now().isoformat(),
+            'action': 'delete',
+            'filename': filename
+        })
+        
         return f"250 File '{filename}' deleted successfully"
     
-    def cmd_mkd(self, dirname: str, session: Dict) -> str:
+    def cmd_mkd(self, dirname: str, session: Dict, session_data: Dict) -> str:
         """Traite la commande MKD"""
         return f'257 "{dirname}" directory created'
     
-    def cmd_rmd(self, dirname: str, session: Dict) -> str:
+    def cmd_rmd(self, dirname: str, session: Dict, session_data: Dict) -> str:
         """Traite la commande RMD"""
         return f"250 Directory '{dirname}' removed successfully"
 
 if __name__ == "__main__":
-    server = VulnerableFTPServer()
+    server = FTPServer()
     try:
         server.start()
     except KeyboardInterrupt:
