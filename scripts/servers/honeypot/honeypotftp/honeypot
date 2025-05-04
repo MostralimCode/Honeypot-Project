@@ -1,0 +1,191 @@
+#!/bin/bash
+
+# Script principal pour gérer le honeypot FTP
+cd /root/honeypot-ftp
+source ~/honeypot-env/bin/activate
+
+# Couleurs pour l'affichage
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+# Fonction d'affichage
+print_banner() {
+    echo -e "\n${GREEN}"
+    echo "    █████▒▄▄▄█████▓ ██▓███      ██░ ██  ▒█████   ███▄    █ ▓█████ ▓██   ██▓ ██▓███   ▒█████  ▄▄▄█████▓"
+    echo "  ▓██   ▒ ▓  ██▒ ▓▒▓██░  ██▒   ▓██░ ██▒▒██▒  ██▒ ██ ▀█   █ ▓█   ▀ ▒██  ██▒▓██░  ██▒▒██▒  ██▒▓  ██▒ ▓▒"
+    echo "  ▒████ ░ ▒ ▓██░ ▒░▓██░ ██▓▒   ▒██▀▀██░▒██░  ██▒▓██  ▀█ ██▒▒███    ▒██ ██░▓██░ ██▓▒▒██░  ██▒▒ ▓██░ ▒░"
+    echo "  ░▓█▒  ░ ░ ▓██▓ ░ ▒██▄█▓▒ ▒   ░▓█ ░██ ▒██   ██░▓██▒  ▐▌██▒▒▓█  ▄  ░ ▐██▓░▒██▄█▓▒ ▒▒██   ██░░ ▓██▓ ░ "
+    echo "  ░▒█░      ▒██▒ ░ ▒██▒ ░  ░   ░▓█▒░██▓░ ████▓▒░▒██░   ▓██░░▒████▒ ░ ██▒▓░▒██▒ ░  ░░ ████▓▒░  ▒██▒ ░ "
+    echo "   ▒ ░      ▒ ░░   ▒▓▒░ ░  ░    ▒ ░░▒░▒░ ▒░▒░▒░ ░ ▒░   ▒ ▒ ░░ ▒░ ░  ██▒▒▒ ▒▓▒░ ░  ░░ ▒░▒░▒░   ▒ ░░   "
+    echo "   ░        ░       ░▒ ░         ▒ ░▒░ ░  ░ ▒ ▒░ ░ ░░   ░ ▒░ ░ ░  ░▓██ ░▒░ ░▒ ░       ░ ▒ ▒░     ░    "
+    echo "   ░ ░    ░         ░░           ░  ░░ ░░ ░ ░ ▒     ░   ░ ░    ░   ▒ ▒ ░░  ░░       ░ ░ ░ ▒    ░      "
+    echo "                                ░  ░  ░    ░ ░           ░    ░  ░░ ░                 ░ ░           "
+    echo -e "${NC}\n"
+}
+
+# Menu principal
+show_menu() {
+    echo -e "${YELLOW}FTP Honeypot Control CLI${NC}"
+    echo "=========================="
+    echo "1. Show current configuration"
+    echo "2. Server management"
+    echo "3. Vulnerability settings"
+    echo "4. Logging settings"
+    echo "5. View logs"
+    echo "6. Generate report"
+    echo "7. Quick actions"
+    echo "8. Exit"
+    echo "=========================="
+    read -p "Select option [1-8]: " choice
+    return $choice
+}
+
+# Gestion du serveur
+server_menu() {
+    echo -e "\n${YELLOW}Server Management${NC}"
+    echo "1. Start honeypot"
+    echo "2. Stop honeypot"
+    echo "3. Restart honeypot"
+    echo "4. Check status"
+    echo "5. Change port"
+    echo "6. Change banner"
+    echo "7. Back to main menu"
+    read -p "Select option [1-7]: " choice
+    
+    case $choice in
+        1) ./deploy.sh ;;
+        2) pkill -f "ftp_server.py" ; echo -e "${GREEN}Honeypot stopped${NC}" ;;
+        3) ./deploy.sh ;;
+        4) 
+            if pgrep -f "ftp_server.py" > /dev/null; then
+                echo -e "${GREEN}Honeypot is running${NC}"
+            else
+                echo -e "${RED}Honeypot is stopped${NC}"
+            fi
+            ;;
+        5) 
+            read -p "Enter new port: " port
+            python3 config_manager.py --port $port --restart
+            ;;
+        6) 
+            read -p "Enter new banner: " banner
+            python3 config_manager.py --banner "$banner" --restart
+            ;;
+        7) return ;;
+    esac
+}
+
+# Paramètres des vulnérabilités
+vuln_menu() {
+    echo -e "\n${YELLOW}Vulnerability Settings${NC}"
+    echo "1. Enable all vulnerabilities"
+    echo "2. Disable all vulnerabilities"
+    echo "3. Weak authentication (toggle)"
+    echo "4. Directory traversal (toggle)"
+    echo "5. User enumeration (toggle)"
+    echo "6. Command injection (toggle)"
+    echo "7. Back to main menu"
+    read -p "Select option [1-7]: " choice
+    
+    case $choice in
+        1) python3 config_manager.py --enable-all-vuln --restart ;;
+        2) python3 config_manager.py --disable-all-vuln --restart ;;
+        3) 
+            if grep -q "weak_auth = True" config/settings.ini; then
+                python3 config_manager.py --disable-weak-auth --restart
+            else
+                python3 config_manager.py --enable-weak-auth --restart
+            fi
+            ;;
+        4) 
+            if grep -q "directory_traversal = True" config/settings.ini; then
+                python3 config_manager.py --disable-traversal --restart
+            else
+                python3 config_manager.py --enable-traversal --restart
+            fi
+            ;;
+        5) 
+            if grep -q "user_enumeration = True" config/settings.ini; then
+                python3 config_manager.py --disable-user-enum --restart
+            else
+                python3 config_manager.py --enable-user-enum --restart
+            fi
+            ;;
+        6) 
+            if grep -q "command_injection = True" config/settings.ini; then
+                python3 config_manager.py --disable-cmd-injection --restart
+            else
+                python3 config_manager.py --enable-cmd-injection --restart
+            fi
+            ;;
+        7) return ;;
+    esac
+}
+
+# Actions rapides
+quick_menu() {
+    echo -e "\n${YELLOW}Quick Actions${NC}"
+    echo "1. Maximum vulnerability mode"
+    echo "2. Stealth mode"
+    echo "3. Safe mode"
+    echo "4. Research mode"
+    echo "5. Reset configuration"
+    echo "6. Back to main menu"
+    read -p "Select option [1-6]: " choice
+    
+    case $choice in
+        1) python3 config_manager.py --profile maximum --restart ;;
+        2) python3 config_manager.py --profile stealth --restart ;;
+        3) python3 config_manager.py --profile safe --restart ;;
+        4) python3 config_manager.py --profile research --restart ;;
+        5) python3 config_manager.py --reset --restart ;;
+        6) return ;;
+    esac
+}
+
+# Boucle principale
+while true; do
+    clear
+    print_banner
+    show_menu
+    choice=$?
+    
+    case $choice in
+        1) python3 config_manager.py --show ; read -p "Press Enter to continue..." ;;
+        2) server_menu ;;
+        3) vuln_menu ;;
+        4) 
+            echo -e "\n${YELLOW}Logging Settings${NC}"
+            echo "Current log level: $(grep log_level config/settings.ini | cut -d'=' -f2)"
+            echo "1. Set to DEBUG"
+            echo "2. Set to INFO"
+            echo "3. Set to WARNING"
+            echo "4. Set to ERROR"
+            read -p "Select option [1-4]: " choice
+            case $choice in
+                1) python3 config_manager.py --log-level DEBUG --restart ;;
+                2) python3 config_manager.py --log-level INFO --restart ;;
+                3) python3 config_manager.py --log-level WARNING --restart ;;
+                4) python3 config_manager.py --log-level ERROR --restart ;;
+            esac
+            ;;
+        5) 
+            echo -e "\n${YELLOW}Available logs:${NC}"
+            ls -la logs/
+            read -p "Enter log file to view (or press Enter to skip): " logfile
+            if [ ! -z "$logfile" ]; then
+                tail -n 50 logs/$logfile | less
+            fi
+            ;;
+        6) 
+            echo "Generating report..."
+            python3 generate_report.py
+            read -p "Press Enter to continue..."
+            ;;
+        7) quick_menu ;;
+        8) echo -e "\n${GREEN}Goodbye!${NC}" ; exit 0 ;;
+        *) echo "Invalid option" ; sleep 1 ;;
+    esac
+done
