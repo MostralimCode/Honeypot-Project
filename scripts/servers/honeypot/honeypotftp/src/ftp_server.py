@@ -7,8 +7,12 @@ import logging
 from datetime import datetime
 from typing import Dict, Tuple, Optional
 
-class FTPServer:
-    """Serveur FTP basique pour honeypot"""
+# Import des modules de vulnérabilités
+from vulnerabilities.auth_handler import VulnerableAuthHandler
+from vulnerabilities.directory_traversal import DirectoryTraversalVulnerability
+
+class VulnerableFTPServer:
+    """Serveur FTP avec vulnérabilités intentionnelles pour honeypot"""
     
     def __init__(self, host: str = '0.0.0.0', port: int = 21):
         self.host = host
@@ -26,6 +30,10 @@ class FTPServer:
             level=logging.INFO
         )
         self.logger = logging.getLogger(__name__)
+        
+        # Initialiser les vulnérabilités
+        self.auth_handler = VulnerableAuthHandler()
+        self.traversal_vuln = DirectoryTraversalVulnerability()
     
     def start(self):
         """Démarre le serveur FTP"""
@@ -34,7 +42,7 @@ class FTPServer:
             self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.server_socket.bind((self.host, self.port))
             self.server_socket.listen(self.max_connections)
-            self.server_socket.settimeout(1.0)  # Pour pouvoir vérifier self.running
+            self.server_socket.settimeout(1.0)
             
             self.running = True
             self.logger.info(f"FTP Server started on {self.host}:{self.port}")
@@ -94,7 +102,7 @@ class FTPServer:
             'username': None,
             'authenticated': False,
             'current_dir': '/',
-            'transfer_type': 'A',  # ASCII par défaut
+            'transfer_type': 'A',
             'passive_mode': False,
             'data_socket': None,
             'data_port': None,
@@ -186,7 +194,7 @@ class FTPServer:
         else:
             return f"502 Command '{command}' not implemented"
     
-    # ========== COMMANDES FTP ==========
+    # ========== COMMANDES FTP AVEC VULNÉRABILITÉS ==========
     
     def cmd_user(self, username: str, session: Dict) -> str:
         """Traite la commande USER"""
@@ -194,11 +202,20 @@ class FTPServer:
         return f"331 Username {username} OK. Password required"
     
     def cmd_pass(self, password: str, session: Dict) -> str:
-        """Traite la commande PASS"""
-        # Pour l'instant, on accepte tous les mots de passe
+        """Traite la commande PASS avec vulnérabilités d'authentification"""
         if session.get('username'):
-            session['authenticated'] = True
-            return "230 User logged in, proceed"
+            # Utiliser le gestionnaire d'authentification vulnérable
+            authenticated, response = self.auth_handler.authenticate(
+                session['username'], 
+                password, 
+                session['ip']
+            )
+            
+            if authenticated:
+                session['authenticated'] = True
+                return response
+            else:
+                return response
         else:
             return "503 Login with USER first"
     
@@ -221,29 +238,32 @@ class FTPServer:
         return f'257 "{current_dir}" is the current directory'
     
     def cmd_cwd(self, path: str, session: Dict) -> str:
-        """Traite la commande CWD"""
-        # Pour l'instant, on simule juste le changement de répertoire
-        session['current_dir'] = path if path.startswith('/') else session['current_dir'] + '/' + path
-        return f"250 Directory successfully changed to {path}"
+        """Traite la commande CWD avec vulnérabilité de directory traversal"""
+        current_dir = session.get('current_dir', '/')
+        
+        # Traiter le chemin avec vulnérabilités potentielles
+        new_path, is_vulnerable = self.traversal_vuln.process_path(current_dir, path, session)
+        
+        # Mettre à jour le répertoire courant
+        session['current_dir'] = new_path
+        
+        # Enregistrer l'accès si vulnérable
+        if is_vulnerable:
+            self.traversal_vuln.check_traversal_patterns(path)
+        
+        return f"250 Directory successfully changed to {new_path}"
     
     def cmd_list(self, args: str, session: Dict) -> str:
-        """Traite la commande LIST"""
-        # Simulation de listage de répertoire
-        file_list = [
-            "drwxr-xr-x   2 root     root         4096 Jan  1 00:00 .",
-            "drwxr-xr-x   3 root     root         4096 Jan  1 00:00 ..",
-            "-rw-r--r--   1 root     root          220 Jan  1 00:00 .bash_logout",
-            "-rw-r--r--   1 root     root         3771 Jan  1 00:00 .bashrc",
-            "-rw-r--r--   1 root     root          807 Jan  1 00:00 .profile",
-            "drwxr-xr-x   2 root     root         4096 Jan  1 00:00 public",
-            "drwxr-xr-x   2 root     root         4096 Jan  1 00:00 private"
-        ]
+        """Traite la commande LIST avec vulnérabilité de directory traversal"""
+        current_dir = session.get('current_dir', '/')
         
-        # En FTP, LIST nécessite une connexion de données
+        # Obtenir le listing avec potentiellement des fichiers sensibles
+        file_list = self.traversal_vuln.get_directory_listing(current_dir)
+        
         return "150 Here comes the directory listing.\r\n" + "\r\n".join(file_list) + "\r\n226 Directory send OK."
     
     def cmd_nlst(self, args: str, session: Dict) -> str:
-        """Traite la commande NLST (Name list)"""
+        """Traite la commande NLST"""
         files = [
             ".bash_logout",
             ".bashrc",
@@ -269,38 +289,46 @@ class FTPServer:
     
     def cmd_port(self, args: str, session: Dict) -> str:
         """Traite la commande PORT (mode actif)"""
-        # Format: h1,h2,h3,h4,p1,p2
         session['passive_mode'] = False
         return "200 PORT command successful"
     
     def cmd_pasv(self, args: str, session: Dict) -> str:
         """Traite la commande PASV (mode passif)"""
         session['passive_mode'] = True
-        # Simulation d'une réponse PASV avec une adresse IP et un port
         return "227 Entering Passive Mode (127,0,0,1,123,45)"
     
     def cmd_retr(self, filename: str, session: Dict) -> str:
-        """Traite la commande RETR (téléchargement)"""
-        return f"150 Opening data connection for {filename}.\r\n226 File send OK"
+        """Traite la commande RETR avec vulnérabilité de directory traversal"""
+        current_dir = session.get('current_dir', '/')
+        
+        # Vérifier si le fichier est sensible
+        full_path = current_dir + "/" + filename if not filename.startswith('/') else filename
+        sensitive_content = self.traversal_vuln.get_file_content(full_path)
+        
+        if sensitive_content:
+            # Simuler le transfert d'un fichier sensible
+            return f"150 Opening data connection for {filename}.\r\n{sensitive_content}\r\n226 File send OK"
+        else:
+            return f"150 Opening data connection for {filename}.\r\n226 File send OK"
     
     def cmd_stor(self, filename: str, session: Dict) -> str:
-        """Traite la commande STOR (upload)"""
+        """Traite la commande STOR"""
         return f"150 Ok to send data.\r\n226 File received OK"
     
     def cmd_dele(self, filename: str, session: Dict) -> str:
-        """Traite la commande DELE (suppression)"""
+        """Traite la commande DELE"""
         return f"250 File '{filename}' deleted successfully"
     
     def cmd_mkd(self, dirname: str, session: Dict) -> str:
-        """Traite la commande MKD (création de répertoire)"""
+        """Traite la commande MKD"""
         return f'257 "{dirname}" directory created'
     
     def cmd_rmd(self, dirname: str, session: Dict) -> str:
-        """Traite la commande RMD (suppression de répertoire)"""
+        """Traite la commande RMD"""
         return f"250 Directory '{dirname}' removed successfully"
 
 if __name__ == "__main__":
-    server = FTPServer()
+    server = VulnerableFTPServer()
     try:
         server.start()
     except KeyboardInterrupt:
