@@ -182,6 +182,125 @@ def home():
     </html>
     """)
 
+@app.route('/search', methods=['GET', 'POST'])
+def search():
+    """
+    Page de recherche vulnérable à l'injection SQL
+    et au Cross-Site Scripting (XSS) réfléchi
+    """
+    results = []
+    search_term = ""
+    error_message = None
+    
+    if request.method == 'POST':
+        search_term = request.form.get('search', '')
+        
+        # Vulnérabilité intentionnelle: pas d'échappement du terme de recherche
+        if search_term:
+            try:
+                # Vulnérabilité intentionnelle: injection SQL
+                # La requête est directement concaténée avec l'entrée utilisateur
+                db = get_db()
+                query = f"SELECT id, name, description, price FROM products WHERE name LIKE '%{search_term}%' OR description LIKE '%{search_term}%'"
+                
+                # Enregistrement de la tentative d'attaque potentielle
+                log_attack('sql_injection', {
+                    'search_term': search_term,
+                    'query': query
+                })
+                
+                # Exécution de la requête vulnérable
+                results = db.execute(query).fetchall()
+            except Exception as e:
+                # Vulnérabilité intentionnelle: divulgation d'erreur
+                error_message = f"Erreur de base de données: {str(e)}"
+                
+                # Enregistrement de l'erreur
+                log_attack('sql_error', {
+                    'search_term': search_term,
+                    'error': error_message
+                })
+    
+    # Rendu du template avec le terme de recherche non-échappé (XSS réfléchi)
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Recherche - {{ company_name }}</title>
+        <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; margin: 0; padding: 0; }
+            header { background: #005f73; color: white; padding: 1rem; }
+            nav { background: #0a9396; padding: 0.5rem; }
+            nav a { color: white; margin-right: 15px; text-decoration: none; }
+            .container { width: 80%; margin: 0 auto; padding: 1rem; }
+            .search-form { margin: 20px 0; }
+            .search-form input[type="text"] { padding: 8px; width: 70%; }
+            .search-form button { padding: 8px 15px; background: #0a9396; color: white; border: none; }
+            .result { border: 1px solid #ddd; padding: 10px; margin: 10px 0; }
+            .error { color: red; background: #ffe0e0; padding: 10px; margin: 10px 0; }
+            footer { background: #001219; color: white; text-align: center; padding: 1rem; }
+        </style>
+    </head>
+    <body>
+        <header>
+            <h1>{{ company_name }}</h1>
+            <p>Solutions de sécurité informatique pour entreprises</p>
+        </header>
+        <nav>
+            <a href="/">Accueil</a>
+            <a href="/about">À propos</a>
+            <a href="/search">Recherche</a>
+            <a href="/contact">Contact</a>
+            <a href="/login">Portail Client</a>
+            <a href="/admin">Admin</a>
+        </nav>
+        <div class="container">
+            <h2>Recherche de produits et services</h2>
+            
+            {% if error_message %}
+                <div class="error">{{ error_message }}</div>
+            {% endif %}
+            
+            <form class="search-form" method="post">
+                <input type="text" name="search" placeholder="Rechercher un produit ou service..." value="{{ search_term }}">
+                <button type="submit">Rechercher</button>
+            </form>
+            
+            {% if search_term %}
+                <!-- Vulnérabilité XSS intentionnelle: affichage non-échappé -->
+                <h3>Résultats pour: {{ search_term | safe }}</h3>
+            {% endif %}
+            
+            {% if results %}
+                <div class="results">
+                    {% for result in results %}
+                        <div class="result">
+                            <h4>{{ result.name }}</h4>
+                            <p>{{ result.description }}</p>
+                            <p>Prix: {{ result.price }} €</p>
+                            <a href="/product/{{ result.id }}">Voir les détails</a>
+                        </div>
+                    {% endfor %}
+                </div>
+            {% elif search_term %}
+                <p>Aucun résultat trouvé pour: "{{ search_term | safe }}"</p>
+            {% endif %}
+            
+            <!-- Commentaire HTML caché intentionnel -->
+            <!-- 
+                Note pour les développeurs: 
+                TODO: Corriger la vulnérabilité d'injection SQL. 
+                La requête actuelle est dangereuse.
+                - Jean (jean@techsecure.local)
+            -->
+        </div>
+        <footer>
+            &copy; 2025 {{ company_name }} - Tous droits réservés
+        </footer>
+    </body>
+    </html>
+    """, company_name=app.config['COMPANY_NAME'], search_term=search_term, results=results, error_message=error_message)
+
 # Point d'entrée principal
 if __name__ == '__main__':
     # Initialiser la base de données si elle n'existe pas
