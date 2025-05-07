@@ -776,6 +776,227 @@ def file_access():
     except Exception as e:
         return f"Erreur lors de la lecture du fichier: {str(e)}", 404
 
+@app.route('/contact', methods=['GET', 'POST'])
+def contact():
+    """
+    Formulaire de contact vulnérable au XSS stocké
+    et à l'injection de commandes
+    """
+    message_sent = False
+    
+    if request.method == 'POST':
+        name = request.form.get('name', '')
+        email = request.form.get('email', '')
+        subject = request.form.get('subject', '')
+        message = request.form.get('message', '')
+        
+        # Vulnérabilité intentionnelle: stockage sans échappement
+        db = get_db()
+        db.execute(
+            "INSERT INTO messages (name, email, subject, message, date) VALUES (?, ?, ?, ?, ?)",
+            (name, email, subject, message, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+        )
+        db.commit()
+        
+        # Enregistrement du message de contact
+        log_attack('contact_form', {
+            'name': name,
+            'email': email,
+            'subject': subject,
+            'message': message
+        })
+        
+        # Simuler un envoi d'email
+        # Vulnérabilité intentionnelle: injection de commandes
+        try:
+            # Simuler une commande système vulnérable
+            cmd = f"echo 'Nouveau message de {name}' > /tmp/contact_notification.txt"
+            os.system(cmd)
+            
+            message_sent = True
+        except Exception as e:
+            flash(f"Erreur lors de l'envoi: {str(e)}")
+    
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Contact - {{ company_name }}</title>
+        <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; margin: 0; padding: 0; }
+            header { background: #005f73; color: white; padding: 1rem; }
+            nav { background: #0a9396; padding: 0.5rem; }
+            nav a { color: white; margin-right: 15px; text-decoration: none; }
+            .container { width: 80%; margin: 0 auto; padding: 1rem; }
+            .contact-form { width: 600px; margin: 20px auto; }
+            .contact-form input, .contact-form textarea { width: 100%; padding: 8px; margin: 5px 0 15px; }
+            .contact-form textarea { height: 150px; }
+            .contact-form button { padding: 10px 15px; background: #0a9396; color: white; border: none; }
+            .alert { padding: 10px; margin: 10px 0; border-radius: 5px; }
+            .alert-success { background: #d1e7dd; color: #0f5132; }
+            footer { background: #001219; color: white; text-align: center; padding: 1rem; }
+        </style>
+    </head>
+    <body>
+        <header>
+            <h1>{{ company_name }}</h1>
+            <p>Solutions de sécurité informatique pour entreprises</p>
+        </header>
+        <nav>
+            <a href="/">Accueil</a>
+            <a href="/about">À propos</a>
+            <a href="/search">Recherche</a>
+            <a href="/contact">Contact</a>
+            <a href="/login">Portail Client</a>
+            <a href="/admin">Admin</a>
+        </nav>
+        <div class="container">
+            <h2>Contactez-nous</h2>
+            
+            {% for message in get_flashed_messages() %}
+                <div class="alert">{{ message }}</div>
+            {% endfor %}
+            
+            {% if message_sent %}
+                <div class="alert alert-success">
+                    <p>Votre message a bien été envoyé. Notre équipe vous répondra dans les plus brefs délais.</p>
+                </div>
+            {% endif %}
+            
+            <div class="contact-form">
+                <form method="post">
+                    <div>
+                        <label for="name">Nom</label>
+                        <input type="text" id="name" name="name" required>
+                    </div>
+                    <div>
+                        <label for="email">Email</label>
+                        <input type="email" id="email" name="email" required>
+                    </div>
+                    <div>
+                        <label for="subject">Sujet</label>
+                        <input type="text" id="subject" name="subject" required>
+                    </div>
+                    <div>
+                        <label for="message">Message</label>
+                        <textarea id="message" name="message" required></textarea>
+                    </div>
+                    <div>
+                        <button type="submit">Envoyer</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+        <footer>
+            &copy; 2025 {{ company_name }} - Tous droits réservés
+        </footer>
+    </body>
+    </html>
+    """, company_name=app.config['COMPANY_NAME'], message_sent=message_sent)
+
+@app.route('/about')
+def about():
+    """Page À propos avec informations sur l'entreprise et commentaires sensibles"""
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>À propos - {{ company_name }}</title>
+        <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; margin: 0; padding: 0; }
+            header { background: #005f73; color: white; padding: 1rem; }
+            nav { background: #0a9396; padding: 0.5rem; }
+            nav a { color: white; margin-right: 15px; text-decoration: none; }
+            .container { width: 80%; margin: 0 auto; padding: 1rem; }
+            footer { background: #001219; color: white; text-align: center; padding: 1rem; }
+        </style>
+    </head>
+    <body>
+        <header>
+            <h1>{{ company_name }}</h1>
+            <p>Solutions de sécurité informatique pour entreprises</p>
+        </header>
+        <nav>
+            <a href="/">Accueil</a>
+            <a href="/about">À propos</a>
+            <a href="/search">Recherche</a>
+            <a href="/contact">Contact</a>
+            <a href="/login">Portail Client</a>
+            <a href="/admin">Admin</a>
+        </nav>
+        <div class="container">
+            <h2>À propos de notre entreprise</h2>
+            <p>Fondée en 2015, {{ company_name }} est spécialisée dans la sécurité informatique et la protection des données.</p>
+            <p>Notre équipe est composée d'experts certifiés en cybersécurité.</p>
+            
+            <h3>Notre équipe</h3>
+            <ul>
+                <li>Jean Dupont - PDG et fondateur</li>
+                <li>Marie Martin - Directrice technique</li>
+                <li>Lucas Bernard - Responsable des audits</li>
+                <li>Sophie Petit - Experte en tests d'intrusion</li>
+                <li>Thomas Lefebvre - Analyste en sécurité</li>
+            </ul>
+            
+            <h3>Nos certifications</h3>
+            <ul>
+                <li>ISO 27001</li>
+                <li>CISSP</li>
+                <li>CEH</li>
+                <li>OSCP</li>
+            </ul>
+            
+            <!-- Commentaire caché intentionnel avec fausse information sensible -->
+            <!-- 
+                Note interne: Serveur de développement accessible sur: dev.techsecure.local 
+                Identifiants: dev_user / TechS3cure2025!
+                Base de données: MySQL 8.0, port 3306
+                Accès SSH au serveur de production: 192.168.1.100:2222
+                Mot de passe root: P@ssw0rd!2025
+            -->
+        </div>
+        <footer>
+            &copy; 2025 {{ company_name }} - Tous droits réservés
+        </footer>
+    </body>
+    </html>
+    """, company_name=app.config['COMPANY_NAME'])
+
+@app.route('/api/user')
+def api_user():
+    """
+    API vulnérable qui expose des données sensibles
+    """
+    user_id = request.args.get('id')
+    
+    if not user_id:
+        return json.dumps({"error": "User ID required"}), 400, {'Content-Type': 'application/json'}
+    
+    # Enregistrement de l'accès à l'API
+    log_attack('api_access', {
+        'user_id': user_id
+    })
+    
+    try:
+        # Vulnérabilité intentionnelle: injection SQL
+        db = get_db()
+        query = f"SELECT id, username, email, role FROM users WHERE id = {user_id}"
+        user = db.execute(query).fetchone()
+        
+        if user:
+            return json.dumps({
+                "id": user['id'],
+                "username": user['username'],
+                "email": user['email'],
+                "role": user['role']
+            }), 200, {'Content-Type': 'application/json'}
+        else:
+            return json.dumps({"error": "User not found"}), 404, {'Content-Type': 'application/json'}
+            
+    except Exception as e:
+        # Vulnérabilité intentionnelle: exposition des erreurs
+        return json.dumps({"error": str(e)}), 500, {'Content-Type': 'application/json'}
+
 # Point d'entrée principal
 if __name__ == '__main__':
     # Initialiser la base de données si elle n'existe pas
