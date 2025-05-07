@@ -11,7 +11,7 @@ import uuid
 import logging
 import sqlite3
 from datetime import datetime
-from flask import Flask, request, g, session, render_template_string, redirect, url_for
+from flask import Flask, request, g, session, render_template_string, redirect, url_for, flash
 
 # Configuration de l'application
 app = Flask(__name__)
@@ -499,6 +499,219 @@ def logout():
     session.pop('username', None)
     session.pop('role', None)
     return redirect(url_for('home'))
+
+@app.route('/admin')
+def admin():
+    """
+    Zone d'administration avec contrôle d'accès vulnérable
+    La vérification se fait uniquement sur la présence de la session
+    """
+    # Vulnérabilité intentionnelle: contrôle d'accès faible (pas de vérification CSRF)
+    # et possibilité de modification de la session côté client
+    if session.get('logged_in'):
+        # L'utilisateur est connecté
+        username = session.get('username', 'Unknown')
+        
+        # Simuler des données d'administration
+        db = get_db()
+        users = db.execute("SELECT id, username, email, role FROM users").fetchall()
+        
+        return render_template_string("""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Administration - {{ company_name }}</title>
+            <style>
+                body { font-family: Arial, sans-serif; line-height: 1.6; margin: 0; padding: 0; }
+                header { background: #005f73; color: white; padding: 1rem; }
+                nav { background: #0a9396; padding: 0.5rem; }
+                nav a { color: white; margin-right: 15px; text-decoration: none; }
+                .container { width: 80%; margin: 0 auto; padding: 1rem; }
+                .admin-panel { background: #f0f0f0; padding: 20px; border-radius: 5px; }
+                table { width: 100%; border-collapse: collapse; }
+                table, th, td { border: 1px solid #ddd; }
+                th, td { padding: 10px; text-align: left; }
+                footer { background: #001219; color: white; text-align: center; padding: 1rem; }
+            </style>
+        </head>
+        <body>
+            <header>
+                <h1>{{ company_name }}</h1>
+                <p>Solutions de sécurité informatique pour entreprises</p>
+            </header>
+            <nav>
+                <a href="/">Accueil</a>
+                <a href="/about">À propos</a>
+                <a href="/search">Recherche</a>
+                <a href="/contact">Contact</a>
+                <a href="/login">Portail Client</a>
+                <a href="/admin">Admin</a>
+                <a href="/logout">Déconnexion</a>
+            </nav>
+            <div class="container">
+                <h2>Panneau d'administration</h2>
+                <p>Bienvenue, {{ username }}!</p>
+                
+                <div class="admin-panel">
+                    <h3>Gestion des utilisateurs</h3>
+                    <table>
+                        <tr>
+                            <th>ID</th>
+                            <th>Nom d'utilisateur</th>
+                            <th>Email</th>
+                            <th>Rôle</th>
+                            <th>Actions</th>
+                        </tr>
+                        {% for user in users %}
+                            <tr>
+                                <td>{{ user.id }}</td>
+                                <td>{{ user.username }}</td>
+                                <td>{{ user.email }}</td>
+                                <td>{{ user.role }}</td>
+                                <td>
+                                    <a href="/admin/edit_user/{{ user.id }}">Modifier</a> |
+                                    <a href="/admin/delete_user/{{ user.id }}">Supprimer</a>
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </table>
+                    
+                    <h3>Fonctionnalités administratives</h3>
+                    <ul>
+                        <li><a href="/admin/backups">Gestion des sauvegardes</a></li>
+                        <li><a href="/admin/logs">Journaux système</a></li>
+                        <li><a href="/admin/settings">Paramètres</a></li>
+                        <li><a href="/admin/upload">Téléchargement de fichiers</a></li>
+                    </ul>
+                </div>
+            </div>
+            <footer>
+                &copy; 2025 {{ company_name }} - Tous droits réservés
+            </footer>
+        </body>
+        </html>
+        """, company_name=app.config['COMPANY_NAME'], username=username, users=users)
+    else:
+        # L'utilisateur n'est pas connecté, redirection vers la page de connexion
+        # Enregistrement de la tentative d'accès non autorisé
+        log_attack('unauthorized_admin_access', {
+            'headers': {k: v for k, v in request.headers.items()},
+            'cookies': {k: v for k, v in request.cookies.items()}
+        })
+        
+        return redirect(url_for('login'))
+
+@app.route('/admin/upload', methods=['GET', 'POST'])
+def admin_upload():
+    """
+    Page de téléchargement de fichiers vulnérable
+    Peut accepter des fichiers malveillants sans vérification
+    """
+    if not session.get('logged_in'):
+        # L'utilisateur n'est pas connecté, redirection vers la page de connexion
+        return redirect(url_for('login'))
+    
+    uploaded_file = None
+    
+    if request.method == 'POST':
+        if 'file' not in request.files:
+            flash('Aucun fichier sélectionné')
+            return redirect(request.url)
+            
+        file = request.files['file']
+        
+        if file.filename == '':
+            flash('Aucun fichier sélectionné')
+            return redirect(request.url)
+            
+        # Vulnérabilité intentionnelle: aucune validation du type de fichier
+        # ou du contenu du fichier
+        filename = file.filename
+        
+        # Enregistrement de la tentative de téléchargement
+        log_attack('file_upload', {
+            'filename': filename,
+            'content_type': file.content_type,
+            'file_size': len(file.read())
+        })
+        
+        # Réinitialiser le pointeur du fichier
+        file.seek(0)
+        
+        # Sauvegarder le fichier
+        upload_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(upload_path)
+        
+        uploaded_file = {
+            'name': filename,
+            'path': upload_path,
+            'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+    
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Téléchargement de fichiers - {{ company_name }}</title>
+        <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; margin: 0; padding: 0; }
+            header { background: #005f73; color: white; padding: 1rem; }
+            nav { background: #0a9396; padding: 0.5rem; }
+            nav a { color: white; margin-right: 15px; text-decoration: none; }
+            .container { width: 80%; margin: 0 auto; padding: 1rem; }
+            .upload-form { background: #f0f0f0; padding: 20px; border-radius: 5px; margin-top: 20px; }
+            .alert { padding: 10px; margin: 10px 0; border-radius: 5px; }
+            .alert-success { background: #d1e7dd; color: #0f5132; }
+            footer { background: #001219; color: white; text-align: center; padding: 1rem; }
+        </style>
+    </head>
+    <body>
+        <header>
+            <h1>{{ company_name }}</h1>
+            <p>Solutions de sécurité informatique pour entreprises</p>
+        </header>
+        <nav>
+            <a href="/">Accueil</a>
+            <a href="/about">À propos</a>
+            <a href="/search">Recherche</a>
+            <a href="/contact">Contact</a>
+            <a href="/login">Portail Client</a>
+            <a href="/admin">Admin</a>
+            <a href="/logout">Déconnexion</a>
+        </nav>
+        <div class="container">
+            <h2>Téléchargement de fichiers</h2>
+            
+            {% for message in get_flashed_messages() %}
+                <div class="alert">{{ message }}</div>
+            {% endfor %}
+            
+            <div class="upload-form">
+                <h3>Télécharger un nouveau fichier</h3>
+                <form method="post" enctype="multipart/form-data">
+                    <div>
+                        <input type="file" name="file" required>
+                    </div>
+                    <div style="margin-top: 10px;">
+                        <button type="submit" style="padding: 8px 15px; background: #0a9396; color: white; border: none;">Télécharger</button>
+                    </div>
+                </form>
+            </div>
+            
+            {% if uploaded_file %}
+                <div class="alert alert-success">
+                    <h3>Fichier téléchargé avec succès</h3>
+                    <p>Nom: {{ uploaded_file.name }}</p>
+                    <p>Date: {{ uploaded_file.time }}</p>
+                </div>
+            {% endif %}
+        </div>
+        <footer>
+            &copy; 2025 {{ company_name }} - Tous droits réservés
+        </footer>
+    </body>
+    </html>
+    """, company_name=app.config['COMPANY_NAME'], uploaded_file=uploaded_file)
 
 # Point d'entrée principal
 if __name__ == '__main__':
