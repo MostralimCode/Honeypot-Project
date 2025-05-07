@@ -52,31 +52,75 @@ def close_connection(exception):
     db = getattr(g, '_database', None)
     if db is not None:
         db.close()
+# Fonction pour classfier la gravité d'une
+def classify_attack_severity(attack_type, data):
+    """
+    Classifie la gravité d'une attaque en fonction de son type et des données
+    
+    Args:
+        attack_type: Type d'attaque
+        data: Données spécifiques à l'attaque
+    Returns:
+        severity: Niveau de gravité (low, medium, high, critical)
+    """
+    # Définir la gravité par défaut pour chaque type d'attaque
+    default_severity = {
+        'sql_injection': 'high',
+        'xss': 'medium',
+        'path_traversal': 'high',
+        'file_upload': 'high',
+        'unauthorized_admin_access': 'critical',
+        'login_attempt': 'low',
+        'login_error': 'medium',
+        'api_access': 'low',
+        'contact_form': 'low'
+    }
+    
+    # Gravité par défaut ou 'medium' si le type n'est pas connu
+    severity = default_severity.get(attack_type, 'medium')
+    
+    # Ajuster la gravité en fonction des données
+    if attack_type == 'sql_injection':
+        search_term = data.get('search_term', '')
+        # Mots-clés indiquant une tentative d'injection avancée
+        if any(keyword in search_term.lower() for keyword in ['union', 'select', 'from', 'where', 'or 1=1', 'admin']):
+            severity = 'critical'
+    
+    elif attack_type == 'path_traversal':
+        filename = data.get('filename', '')
+        # Tentatives d'accès à des fichiers sensibles
+        if any(sensitive in filename.lower() for sensitive in ['etc/passwd', 'shadow', '.ssh', 'config']):
+            severity = 'critical'
+    
+    elif attack_type == 'file_upload':
+        filename = data.get('filename', '')
+        # Extensions de fichiers potentiellement dangereux
+        dangerous_extensions = ['.php', '.jsp', '.asp', '.cgi', '.py', '.sh', '.pl', '.rb']
+        if any(filename.lower().endswith(ext) for ext in dangerous_extensions):
+            severity = 'critical'
+    
+    return severity
 
 # Fonction de journalisation des attaques
 def log_attack(attack_type, data, ip=None):
     """
-    Enregistre les détails d'une attaque potentielle
-    
-    Args:
-        attack_type: Type d'attaque (sql_injection, xss, path_traversal, etc.)
-        data: Données spécifiques à l'attaque
-        ip: Adresse IP de l'attaquant (par défaut: IP de la requête)
-    
-    Returns:
-        attack_id: Identifiant unique de l'attaque
+    Enregistre les détails d'une attaque potentielle avec classification
     """
     if ip is None:
         ip = request.remote_addr
-        
-    # Création d'un ID unique pour tracer cette attaque
+    
+    timestamp = datetime.now().isoformat()
     attack_id = str(uuid.uuid4())
     
-    # Collecte des informations sur la requête
+    # Classer la gravité de l'attaque
+    severity = classify_attack_severity(attack_type, data)
+    
+    # Enrichir les données avec des informations supplémentaires
     log_data = {
-        'timestamp': datetime.now().isoformat(),
+        'timestamp': timestamp,
         'attack_id': attack_id,
         'attack_type': attack_type,
+        'severity': severity,
         'ip': ip,
         'user_agent': request.headers.get('User-Agent', 'Unknown'),
         'method': request.method,
@@ -84,12 +128,62 @@ def log_attack(attack_type, data, ip=None):
         'query_string': request.query_string.decode('utf-8', errors='ignore'),
         'cookies': {k: v for k, v in request.cookies.items()},
         'headers': {k: v for k, v in request.headers.items()},
-        'data': data
+        'referer': request.headers.get('Referer', 'Unknown'),
+        'data': data,
+        'honeypot': 'http'
     }
     
-    # Enregistrement au format JSON
-    logging.info(json.dumps(log_data))
+    # Format JSON pour faciliter l'analyse ultérieure
+    log_entry = json.dumps(log_data)
+    
+    # Enregistrer dans le fichier de log standard
+    logging.info(log_entry)
+    
+    # Enregistrer dans un fichier spécifique par type d'attaque
+    attack_log_file = os.path.join(app.config['LOG_FOLDER'], f"{attack_type}.log")
+    with open(attack_log_file, 'a') as f:
+        f.write(log_entry + '\n')
+    
+    # Pour les attaques critiques, créer un fichier d'alerte spécial
+    if severity == 'critical':
+        alert_file = os.path.join(app.config['LOG_FOLDER'], "critical_alerts.log")
+        with open(alert_file, 'a') as f:
+            f.write(log_entry + '\n')
+    
     return attack_id
+
+def setup_logging():
+    """Configure le système de journalisation avec rotation des logs"""
+    import logging.handlers
+    
+    if not os.path.exists(app.config['LOG_FOLDER']):
+        os.makedirs(app.config['LOG_FOLDER'])
+    
+    # Configuration du logger principal
+    main_log = logging.getLogger()
+    main_log.setLevel(logging.INFO)
+    
+    # Supprimer les handlers existants
+    for handler in main_log.handlers[:]:
+        main_log.removeHandler(handler)
+    
+    # Rotation des logs quotidienne, garde 30 jours d'historique
+    handler = logging.handlers.TimedRotatingFileHandler(
+        app.config['LOG_FILE'],
+        when="midnight",
+        interval=1,
+        backupCount=30
+    )
+    
+    formatter = logging.Formatter('%(asctime)s - %(message)s')
+    handler.setFormatter(formatter)
+    main_log.addHandler(handler)
+    
+    # Ajouter également un handler pour la console (utile pendant le développement)
+    console = logging.StreamHandler()
+    console.setLevel(logging.INFO)
+    console.setFormatter(formatter)
+    main_log.addHandler(console)
 
 # Configuration des headers HTTP pour exposer des informations
 @app.after_request
@@ -999,6 +1093,9 @@ def api_user():
 
 # Point d'entrée principal
 if __name__ == '__main__':
+
+    # Configuration du logging avancé
+    setup_logging()
     # Initialiser la base de données si elle n'existe pas
     if not os.path.exists(app.config['DATABASE']):
         init_db()
