@@ -11,7 +11,7 @@ import uuid
 import logging
 import sqlite3
 from datetime import datetime
-from flask import Flask, request, g, session, render_template_string, redirect, url_for, flash
+from flask import Flask, request, g, session, render_template_string, redirect, url_for, flash, make_response
 
 # Configuration de l'application
 app = Flask(__name__)
@@ -160,27 +160,48 @@ def home():
     <!DOCTYPE html>
     <html>
     <head>
-        <title>Honeypot HTTP - Structure de base</title>
+        <title>Honeypot HTTP - {{ company_name }}</title>
         <style>
             body { font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; }
             h1 { color: #333; }
             .success { color: green; }
             .info { background: #f0f0f0; padding: 15px; border-radius: 5px; }
+            nav { margin: 20px 0; }
+            nav a { margin-right: 15px; text-decoration: none; color: #0a9396; }
+            .files-section { margin-top: 30px; }
         </style>
     </head>
     <body>
-        <h1>Honeypot HTTP - Structure de base</h1>
+        <h1>{{ company_name }}</h1>
         <div class="success">
-            <p>✅ L'application Flask est correctement en cours d'exécution!</p>
+            <p>✅ Bienvenue sur le site de TechSecure Solutions</p>
         </div>
+        
+        <nav>
+            <a href="/">Accueil</a>
+            <a href="/about">À propos</a>
+            <a href="/search">Recherche</a>
+            <a href="/contact">Contact</a>
+            <a href="/login">Portail Client</a>
+            <a href="/admin">Admin</a>
+        </nav>
+        
         <div class="info">
-            <p>Cette page confirme que la structure de base du honeypot HTTP est fonctionnelle.</p>
-            <p>Configuration de base terminée avec succès.</p>
-            <p>Prêt pour l'implémentation des vulnérabilités spécifiques.</p>
+            <p>Nous sommes spécialisés dans les solutions de sécurité informatique pour entreprises.</p>
+            <p>Nos experts sont à votre disposition pour vous aider à sécuriser votre infrastructure.</p>
+        </div>
+        
+        <div class="files-section">
+            <h3>Ressources disponibles:</h3>
+            <ul>
+                <li><a href="/file?name=presentation.pdf">Présentation de nos services</a></li>
+                <li><a href="/file?name=tarifs.txt">Grille tarifaire</a></li>
+                <li><a href="/file?name=exemple_rapport.pdf">Exemple de rapport d'audit</a></li>
+            </ul>
         </div>
     </body>
     </html>
-    """)
+    """, company_name=app.config['COMPANY_NAME'])
 
 @app.route('/search', methods=['GET', 'POST'])
 def search():
@@ -712,6 +733,48 @@ def admin_upload():
     </body>
     </html>
     """, company_name=app.config['COMPANY_NAME'], uploaded_file=uploaded_file)
+
+@app.route('/file', methods=['GET'])
+def file_access():
+    """
+    Endpoint vulnérable à la traversée de chemin (path traversal)
+    Permet d'accéder à des fichiers en dehors du répertoire prévu
+    """
+    filename = request.args.get('name', '')
+    
+    if not filename:
+        return "Erreur: Aucun fichier spécifié", 400
+    
+    # Enregistrement de la tentative d'accès au fichier
+    log_attack('path_traversal', {
+        'filename': filename
+    })
+    
+    # Vulnérabilité intentionnelle: pas de validation du chemin
+    # Un attaquant peut utiliser "../" pour sortir du répertoire uploads
+    file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    
+    try:
+        # Tentative d'ouverture du fichier
+        with open(file_path, 'rb') as f:
+            data = f.read()
+        
+        # Déterminer le type MIME
+        if filename.endswith('.txt'):
+            mimetype = 'text/plain'
+        elif filename.endswith('.pdf'):
+            mimetype = 'application/pdf'
+        elif filename.endswith('.jpg') or filename.endswith('.jpeg'):
+            mimetype = 'image/jpeg'
+        elif filename.endswith('.png'):
+            mimetype = 'image/png'
+        else:
+            mimetype = 'application/octet-stream'
+        
+        return make_response(data, 200, {'Content-Type': mimetype})
+    
+    except Exception as e:
+        return f"Erreur lors de la lecture du fichier: {str(e)}", 404
 
 # Point d'entrée principal
 if __name__ == '__main__':
