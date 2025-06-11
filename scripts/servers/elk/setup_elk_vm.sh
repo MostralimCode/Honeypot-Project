@@ -22,7 +22,7 @@ DISK_STORAGE="local-lvm"
 EFI_STORAGE="local"
 
 # Réseau
-ELK_IP="192.168.2.120"  # IP statique pour ELK
+ELK_IP="192.168.2.124"  # IP statique pour ELK
 
 # Couleurs pour l'affichage
 GREEN='\033[0;32m'
