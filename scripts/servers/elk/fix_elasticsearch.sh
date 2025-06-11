@@ -1,6 +1,4 @@
 #!/bin/bash
-# scripts/elk/fix_elasticsearch_jvm.sh
-# Correction des options JVM d'Elasticsearch
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -24,231 +22,196 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-print_status "=== Correction de la configuration JVM Elasticsearch ==="
+print_status "=== Configuration Elasticsearch simplifiée ==="
 
 # 1. Arrêter Elasticsearch
 print_status "Arrêt d'Elasticsearch..."
 systemctl stop elasticsearch
 
-# 2. Nettoyer la configuration JVM problématique
-print_status "Nettoyage de la configuration JVM..."
+# 2. Configuration JVM minimaliste et compatible
+print_status "Création d'une configuration JVM minimaliste..."
 
-# Sauvegarder la configuration actuelle
-cp /etc/elasticsearch/jvm.options /etc/elasticsearch/jvm.options.broken.$(date +%Y%m%d_%H%M%S)
+# Sauvegarder l'ancienne configuration
+cp /etc/elasticsearch/jvm.options /etc/elasticsearch/jvm.options.backup.$(date +%Y%m%d_%H%M%S)
 
-# Créer une nouvelle configuration JVM propre
+# Configuration JVM ultra-simple
 cat > /etc/elasticsearch/jvm.options << 'EOF'
-## JVM configuration for Elasticsearch
+# Configuration JVM simplifiée pour Elasticsearch
 
 ################################################################
 ## IMPORTANT: JVM heap size
 ################################################################
-##
-## The heap size is automatically configured by Elasticsearch
-## based on the available memory in your system and the roles
-## each node is configured to fulfill. If specifying heap is
-## required, it should be done through a file in jvm.options.d,
-## which should be named with .options suffix, for example, the
-## heap size can be set in /etc/elasticsearch/jvm.options.d/heap.options
-## See https://www.elastic.co/guide/en/elasticsearch/reference/current/jvm-options.html
-## for more details
-##
-################################################################
-
-# Xms represents the initial size of total heap space
-# Xmx represents the maximum size of total heap space
-
 -Xms1g
 -Xmx1g
 
 ################################################################
-## Expert settings
-################################################################
-##
-## All settings below this section are considered
-## expert settings. Don't tamper with them unless
-## you understand what you are doing
-##
+## Configuration de base
 ################################################################
 
-## GC configuration
-8-13:-XX:+UseConcMarkSweepGC
-8-13:-XX:CMSInitiatingOccupancyFraction=75
-8-13:-XX:+UseCMSInitiatingOccupancyOnly
-
-## G1GC Configuration
-# NOTE: G1 GC is only supported on JDK version 10 or later
-# to use G1GC, uncomment the next two lines and update the version on the
-# following three lines to your version of the JDK
-14-:-XX:+UseG1GC
-
-## JVM temporary directory
+# Temporary directory
 -Djava.io.tmpdir=${ES_TMPDIR}
 
-## heap dumps
-
-# generate a heap dump when an allocation from the Java heap fails; heap dumps
-# are created in the working directory of the JVM unless an alternative path is
-# specified
+# Heap dump en cas d'erreur
 -XX:+HeapDumpOnOutOfMemoryError
-
-# exit right after heap dump on out of memory error
 -XX:+ExitOnOutOfMemoryError
-
-# specify an alternative path for heap dumps; ensure the directory exists and
-# has sufficient space
 -XX:HeapDumpPath=data
-
-# specify an alternative path for JVM fatal error logs
 -XX:ErrorFile=logs/hs_err_pid%p.log
 
-## JDK 8 GC logging
-8:-XX:+PrintGCDetails
-8:-XX:+PrintGCTimeStamps
-8:-XX:+PrintGCDateStamps
-8:-XX:+PrintClassHistogram
-8:-XX:+PrintTenuringDistribution
-8:-XX:+PrintGCApplicationStoppedTime
-8:-Xloggc:logs/gc.log
-8:-XX:+UseGCLogFileRotation
-8:-XX:NumberOfGCLogFiles=32
-8:-XX:GCLogFileSize=64m
-
-# JDK 9+ GC logging
-9-:-Xlog:gc*,gc+age=trace,safepoint:logs/gc.log:utctime,level,tags:filecount=32,filesize=64m
-
-# Elasticsearch 5.0.0 will throw an exception on unquoted field names in JSON.
-# If documents were already indexed with unquoted field names, YAML boolean
-# values will cause parsing failures. See https://www.elastic.co/guide/en/elasticsearch/reference/5.0/breaking_50_mapping_changes.html#_elasticsearch_5_0_0_will_throw_an_exception_on_unquoted_field_names_in_json
-#-Delasticsearch.json.allow_unquoted_field_names=true
-
-# Disable deprecation logging to avoid log spam
-# Comment out this line to enable deprecation logging
+# Désactiver les logs de deprecation pour éviter le spam
 -Delasticsearch.deprecation_logger=false
 EOF
 
-# 3. Créer un fichier de configuration heap séparé
-print_status "Configuration de la mémoire heap..."
+print_status "Configuration JVM simplifiée créée"
 
-# Calculer la mémoire appropriée
-TOTAL_RAM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
-TOTAL_RAM_GB=$((TOTAL_RAM_KB / 1024 / 1024))
+# 3. Configuration Elasticsearch avec la bonne IP
+print_status "Configuration d'Elasticsearch avec IP 192.168.2.124..."
 
-if [ $TOTAL_RAM_GB -ge 8 ]; then
-    ES_HEAP_SIZE="2g"
-elif [ $TOTAL_RAM_GB -ge 4 ]; then
-    ES_HEAP_SIZE="1g"
-else
-    ES_HEAP_SIZE="512m"
-fi
+cat > /etc/elasticsearch/elasticsearch.yml << 'EOF'
+# Configuration Elasticsearch simplifiée
 
-# Créer le répertoire jvm.options.d s'il n'existe pas
-mkdir -p /etc/elasticsearch/jvm.options.d
+# Cluster
+cluster.name: honeypot-elk
+node.name: elk-node-1
 
-# Créer la configuration heap
-cat > /etc/elasticsearch/jvm.options.d/heap.options << EOF
-# Heap size configuration
--Xms${ES_HEAP_SIZE}
--Xmx${ES_HEAP_SIZE}
+# Paths
+path.data: /var/lib/elasticsearch
+path.logs: /var/log/elasticsearch
+
+# Memory
+bootstrap.memory_lock: true
+
+# Network - IP CORRIGÉE
+network.host: 192.168.2.124
+http.port: 9200
+
+# Discovery
+discovery.type: single-node
+
+# Security - DÉSACTIVÉE
+xpack.security.enabled: false
+xpack.security.enrollment.enabled: false
+xpack.security.transport.ssl.enabled: false
+xpack.security.http.ssl.enabled: false
+
+# Index management
+action.auto_create_index: "honeypot-*,logstash-*,filebeat-*,.monitoring-*"
+
+# Performance basique
+index.number_of_shards: 1
+index.number_of_replicas: 0
 EOF
 
-print_status "Heap configuré: $ES_HEAP_SIZE"
+print_status "Configuration Elasticsearch créée avec IP 192.168.2.124"
 
-# 4. Vérifier la version Java et ajuster si nécessaire
-print_status "Vérification de Java..."
-JAVA_VERSION=$(java -version 2>&1 | head -n 1 | cut -d'"' -f2 | cut -d'.' -f1)
-echo "Version Java détectée: $JAVA_VERSION"
+# 4. Supprimer les configurations dans jvm.options.d qui peuvent poser problème
+print_status "Nettoyage des configurations JVM additionnelles..."
+rm -rf /etc/elasticsearch/jvm.options.d/*
 
-# 5. Vérifier les permissions
-print_status "Vérification des permissions..."
+# Créer une configuration heap simple
+mkdir -p /etc/elasticsearch/jvm.options.d
+cat > /etc/elasticsearch/jvm.options.d/heap.options << 'EOF'
+# Configuration heap simplifiée
+-Xms1g
+-Xmx1g
+EOF
+
+# 5. Permissions
+print_status "Configuration des permissions..."
 chown -R elasticsearch:elasticsearch /etc/elasticsearch
 chown -R elasticsearch:elasticsearch /var/lib/elasticsearch
 chown -R elasticsearch:elasticsearch /var/log/elasticsearch
 
-# 6. Recharger systemd et démarrer Elasticsearch
+# 6. Recharger et démarrer
 print_status "Redémarrage d'Elasticsearch..."
 systemctl daemon-reload
 systemctl start elasticsearch
 
-# 7. Attendre le démarrage
-print_status "Attente du démarrage (60 secondes max)..."
+# 7. Attendre le démarrage avec plus de patience
+print_status "Attente du démarrage (jusqu'à 120 secondes)..."
 counter=0
-while [ $counter -lt 60 ]; do
+while [ $counter -lt 120 ]; do
     if systemctl is-active --quiet elasticsearch; then
-        print_status "Elasticsearch démarré avec succès!"
+        print_status "✓ Service Elasticsearch actif"
         break
+    fi
+    if [ $((counter % 10)) -eq 0 ]; then
+        echo "Attente... ${counter}s"
     fi
     sleep 2
     counter=$((counter + 2))
-    echo -n "."
 done
 
-echo ""
-
-# 8. Vérifier le statut
+# 8. Vérifier le statut final
 STATUS=$(systemctl is-active elasticsearch)
+echo ""
+print_status "Statut final: $STATUS"
+
 if [ "$STATUS" = "active" ]; then
-    print_status "✓ Elasticsearch fonctionne correctement"
+    print_status "✓ Elasticsearch est démarré"
     
-    # Attendre un peu plus pour la connectivité
-    sleep 10
+    # Attendre que l'API soit disponible
+    print_status "Attente de l'API Elasticsearch..."
+    api_counter=0
+    while [ $api_counter -lt 60 ]; do
+        if curl -s "http://192.168.2.124:9200/" >/dev/null 2>&1; then
+            print_status "✓ API Elasticsearch accessible"
+            break
+        fi
+        sleep 2
+        api_counter=$((api_counter + 2))
+        if [ $((api_counter % 10)) -eq 0 ]; then
+            echo "Test API... ${api_counter}s"
+        fi
+    done
     
-    # Test de connectivité
-    if curl -s "http://192.168.2.124:9200/" >/dev/null; then
-        print_status "✓ API Elasticsearch accessible"
-        
-        # Afficher les informations du cluster
+    # Test final de l'API
+    echo ""
+    print_status "Test de l'API:"
+    if curl -s "http://192.168.2.124:9200/" | grep -q "cluster_name"; then
+        print_status "✓ API fonctionne correctement"
         echo ""
-        print_status "Informations du cluster:"
+        echo "Informations du cluster:"
         curl -s "http://192.168.2.124:9200/" | jq . 2>/dev/null || curl -s "http://192.168.2.124:9200/"
-        
         echo ""
-        print_status "Santé du cluster:"
+        echo "Santé du cluster:"
         curl -s "http://192.168.2.124:9200/_cluster/health?pretty"
-        
     else
-        print_warning "⚠ API pas encore accessible, attendez quelques minutes"
+        print_warning "⚠ API pas encore prête"
     fi
-else
-    print_error "✗ Elasticsearch ne démarre toujours pas"
     
-    print_error "Vérification des logs d'erreur:"
-    journalctl -u elasticsearch --no-pager -n 20
+else
+    print_error "✗ Elasticsearch ne démarre pas"
+    print_error "Vérification des derniers logs:"
+    journalctl -u elasticsearch --no-pager -n 10
 fi
 
-# 9. Créer un script de diagnostic
-cat > /opt/elk-scripts/diagnose_elasticsearch.sh << 'EOF'
+# 9. Créer un script de test simple
+cat > /opt/elk-scripts/test_elasticsearch.sh << 'EOF'
 #!/bin/bash
-echo "=== Diagnostic Elasticsearch ==="
-echo ""
+echo "=== Test Elasticsearch ==="
 
-echo "Status du service:"
-systemctl status elasticsearch --no-pager -l
-
-echo ""
-echo "Derniers logs:"
-journalctl -u elasticsearch --no-pager -n 10
+echo "1. Statut du service:"
+systemctl is-active elasticsearch
 
 echo ""
-echo "Configuration JVM:"
-cat /etc/elasticsearch/jvm.options.d/heap.options
+echo "2. Test API:"
+curl -s "http://192.168.2.124:9200/" || echo "API non accessible"
 
 echo ""
-echo "Test connectivité:"
-curl -s "http://192.168.2.124:9200/" || echo "Pas de réponse"
+echo "3. Santé du cluster:"
+curl -s "http://192.168.2.124:9200/_cluster/health" || echo "Cluster non accessible"
 
 echo ""
-echo "Processus Java:"
-ps aux | grep elasticsearch | grep -v grep
+echo "4. Processus:"
+ps aux | grep elasticsearch | grep -v grep || echo "Aucun processus"
 
 echo ""
-echo "Ports en écoute:"
-netstat -tlnp | grep 9200
+echo "5. Port 9200:"
+netstat -tlnp | grep 9200 || echo "Port 9200 pas en écoute"
 EOF
 
-chmod +x /opt/elk-scripts/diagnose_elasticsearch.sh
+chmod +x /opt/elk-scripts/test_elasticsearch.sh
 
-print_status "Script de diagnostic créé: /opt/elk-scripts/diagnose_elasticsearch.sh"
-
-print_status "=== Correction terminée ==="
-print_warning "Si des erreurs persistent, exécutez: /opt/elk-scripts/diagnose_elasticsearch.sh"
+print_status "=== Configuration simplifiée terminée ==="
+print_status "Script de test créé: /opt/elk-scripts/test_elasticsearch.sh"
+print_warning "Si des problèmes persistent, vérifiez: journalctl -u elasticsearch -f"
