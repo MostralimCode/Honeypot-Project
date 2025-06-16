@@ -1,6 +1,6 @@
 #!/bin/bash
-# Script de diagnostic complet pour identifier pourquoi les données honeypot n'arrivent pas dans Elasticsearch
-# À exécuter sur les VMs concernées
+# Diagnostic complet pour identifier pourquoi les données n'arrivent pas
+# À exécuter sur VM ELK et VM Honeypot
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -13,234 +13,224 @@ print_warning() { echo -e "${YELLOW}[!] $1${NC}"; }
 print_error() { echo -e "${RED}[-] $1${NC}"; }
 print_info() { echo -e "${BLUE}[i] $1${NC}"; }
 
-echo "=== DIAGNOSTIC COMPLET ELK - HONEYPOTS ==="
+CURRENT_IP=$(ip route get 1 | sed -n 's/^.*src \([0-9.]*\) .*$/\1/p')
+
+echo "=== DIAGNOSTIC COMPLET PIPELINE ELK-HONEYPOTS ==="
 echo "Date: $(date)"
+echo "IP: $CURRENT_IP"
 echo ""
 
 # ================================
-# PARTIE 1: DIAGNOSTIC VM ELK (192.168.2.124)
+# DIAGNOSTIC VM ELK (192.168.2.124)
 # ================================
 
-if [[ $(ip route get 1 | sed -n 's/^.*src \([0-9.]*\) .*$/\1/p') == "192.168.2.124" ]]; then
-    print_status "=== DIAGNOSTIC VM ELK (192.168.2.124) ==="
+if [[ "$CURRENT_IP" == "192.168.2.124" ]]; then
+    print_status "=== DIAGNOSTIC APPROFONDI VM ELK ==="
     
-    # 1. Vérifier les services ELK
+    # 1. Services ELK
     print_info "1. État des services ELK:"
     for service in elasticsearch logstash kibana; do
-        if systemctl is-active --quiet $service; then
-            echo "  ✓ $service: ACTIF"
+        STATUS=$(systemctl is-active $service)
+        if [ "$STATUS" = "active" ]; then
+            echo "  ✓ $service: $STATUS"
         else
-            echo "  ✗ $service: ARRÊTÉ"
+            echo "  ✗ $service: $STATUS"
         fi
     done
     
-    # 2. Vérifier les APIs
-    print_info "2. Test des APIs:"
+    # 2. Ports d'écoute détaillés
+    print_info "2. Ports d'écoute détaillés:"
+    echo "Port 9200 (Elasticsearch):"
+    netstat -tlnp 2>/dev/null | grep :9200 || echo "  ✗ Port 9200 fermé"
+    echo "Port 5044 (Logstash Beats):"
+    netstat -tlnp 2>/dev/null | grep :5044 || echo "  ✗ Port 5044 fermé"
+    echo "Port 9600 (Logstash API):"
+    netstat -tlnp 2>/dev/null | grep :9600 || echo "  ✗ Port 9600 fermé"
     
-    # Elasticsearch
+    # 3. Configuration Logstash détaillée
+    print_info "3. Configuration Logstash:"
+    echo "Fichiers de configuration:"
+    ls -la /etc/logstash/conf.d/
+    echo ""
+    echo "Test syntaxe Logstash:"
+    if sudo -u logstash /usr/share/logstash/bin/logstash --path.settings /etc/logstash -t 2>/dev/null; then
+        echo "  ✓ Syntaxe OK"
+    else
+        echo "  ✗ Erreur syntaxe"
+        sudo -u logstash /usr/share/logstash/bin/logstash --path.settings /etc/logstash -t
+    fi
+    
+    # 4. API Logstash
+    print_info "4. API Logstash:"
+    if curl -s "http://192.168.2.124:9600/" >/dev/null; then
+        echo "  ✓ API accessible"
+        echo "Pipelines actifs:"
+        curl -s "http://192.168.2.124:9600/_node/pipelines" | jq 'keys' 2>/dev/null || echo "  Pas de pipelines"
+        echo ""
+        echo "Statistiques input:"
+        curl -s "http://192.168.2.124:9600/_node/stats/pipelines" | jq '.pipelines.main.plugins.inputs' 2>/dev/null || echo "  Pas de stats input"
+    else
+        echo "  ✗ API non accessible"
+    fi
+    
+    # 5. Logs Logstash récents
+    print_info "5. Logs Logstash récents:"
+    journalctl -u logstash --no-pager -n 10 | grep -E "(ERROR|WARN|beats|5044)" || echo "  Pas d'erreurs visibles"
+    
+    # 6. Test Elasticsearch
+    print_info "6. Test Elasticsearch:"
     if curl -s "http://192.168.2.124:9200/" | grep -q "cluster_name"; then
-        echo "  ✓ Elasticsearch API: OK"
-        # Lister les indices existants
-        echo "     Indices actuels:"
-        curl -s "http://192.168.2.124:9200/_cat/indices?v" | head -10
+        echo "  ✓ Elasticsearch accessible"
+        echo "Santé cluster:"
+        curl -s "http://192.168.2.124:9200/_cluster/health" | jq '.status' 2>/dev/null || echo "  Status inconnu"
+        echo "Indices existants:"
+        curl -s "http://192.168.2.124:9200/_cat/indices" 2>/dev/null | head -5 || echo "  Pas d'indices"
     else
-        echo "  ✗ Elasticsearch API: ERREUR"
+        echo "  ✗ Elasticsearch non accessible"
     fi
     
-    # Logstash
-    if curl -s "http://192.168.2.124:9600/" | grep -q "version"; then
-        echo "  ✓ Logstash API: OK"
-    else
-        echo "  ✗ Logstash API: ERREUR"
+    # 7. Pare-feu et connectivité
+    print_info "7. Pare-feu et connectivité:"
+    if command -v ufw >/dev/null 2>&1; then
+        echo "UFW status:"
+        ufw status | grep -E "(5044|9200)" || echo "  Pas de règles ELK"
     fi
     
-    # 3. Vérifier les pipelines Logstash
-    print_info "3. Pipelines Logstash:"
-    if [ -d "/etc/logstash/conf.d" ]; then
-        echo "     Fichiers de configuration:"
-        ls -la /etc/logstash/conf.d/
-        
-        # Test syntaxe
-        echo "     Test syntaxe:"
-        if sudo -u logstash /usr/share/logstash/bin/logstash --path.settings /etc/logstash -t 2>/dev/null; then
-            echo "  ✓ Syntaxe pipelines: OK"
+    echo "Test connectivité vers VM Honeypot:"
+    if ping -c 2 192.168.2.117 >/dev/null 2>&1; then
+        echo "  ✓ VM Honeypot accessible"
+    else
+        echo "  ✗ VM Honeypot non accessible"
+    fi
+    
+    # 8. Créer un test de réception manuelle
+    print_info "8. Test de réception manuelle:"
+    echo "Test avec netcat sur port 5044:"
+    timeout 5 bash -c 'echo "test" | nc -w 1 192.168.2.124 5044' 2>/dev/null && echo "  ✓ Port 5044 répond" || echo "  ✗ Port 5044 ne répond pas"
+
+# ================================
+# DIAGNOSTIC VM HONEYPOT (192.168.2.117)
+# ================================
+
+elif [[ "$CURRENT_IP" == "192.168.2.117" ]]; then
+    print_status "=== DIAGNOSTIC APPROFONDI VM HONEYPOT ==="
+    
+    # 1. État Filebeat
+    print_info "1. État Filebeat détaillé:"
+    systemctl status filebeat --no-pager -l | head -10
+    
+    # 2. Configuration Filebeat
+    print_info "2. Validation configuration Filebeat:"
+    if filebeat test config 2>/dev/null; then
+        echo "  ✓ Configuration valide"
+    else
+        echo "  ✗ Configuration invalide"
+        filebeat test config
+    fi
+    
+    # 3. Test output Filebeat
+    print_info "3. Test output Filebeat:"
+    if filebeat test output 2>/dev/null; then
+        echo "  ✓ Connexion Logstash OK"
+    else
+        echo "  ✗ Connexion Logstash échec"
+        filebeat test output
+    fi
+    
+    # 4. Connectivité réseau vers ELK
+    print_info "4. Tests connectivité ELK:"
+    echo "Ping VM ELK:"
+    if ping -c 2 192.168.2.124 >/dev/null 2>&1; then
+        echo "  ✓ VM ELK accessible"
+    else
+        echo "  ✗ VM ELK non accessible"
+    fi
+    
+    echo "Port 5044 (Logstash):"
+    if nc -z 192.168.2.124 5044 2>/dev/null; then
+        echo "  ✓ Port 5044 accessible"
+    else
+        echo "  ✗ Port 5044 fermé"
+    fi
+    
+    echo "Port 9200 (Elasticsearch):"
+    if nc -z 192.168.2.124 9200 2>/dev/null; then
+        echo "  ✓ Port 9200 accessible"
+    else
+        echo "  ✗ Port 9200 fermé"
+    fi
+    
+    # 5. Logs Filebeat détaillés
+    print_info "5. Logs Filebeat détaillés:"
+    journalctl -u filebeat --no-pager -n 15 | grep -E "(ERROR|connection|refused|timeout)" || echo "  Pas d'erreurs de connexion"
+    
+    # 6. Vérification des fichiers de logs source
+    print_info "6. Fichiers de logs source:"
+    
+    logs_to_check=(
+        "/home/cowrie/cowrie/var/log/cowrie/cowrie.json"
+        "/var/log/honeypot/http_honeypot.log"
+        "/root/honeypot-ftp/logs/sessions.json"
+    )
+    
+    for log_file in "${logs_to_check[@]}"; do
+        if [ -f "$log_file" ]; then
+            SIZE=$(wc -l < "$log_file" 2>/dev/null || echo "0")
+            RECENT=$(tail -1 "$log_file" 2>/dev/null | jq -r '.timestamp // .message' 2>/dev/null | head -c 30 || echo "Format non-JSON")
+            echo "  ✓ $log_file: $SIZE lignes, dernier: $RECENT..."
         else
-            echo "  ✗ Syntaxe pipelines: ERREUR"
-        fi
-    else
-        echo "  ✗ Répertoire pipelines manquant"
-    fi
-    
-    # 4. Vérifier les ports d'écoute
-    print_info "4. Ports d'écoute ELK:"
-    for port in 9200 5601 5044 9600; do
-        if netstat -tlnp 2>/dev/null | grep -q ":$port "; then
-            echo "  ✓ Port $port: EN ÉCOUTE"
-        else
-            echo "  ✗ Port $port: FERMÉ"
+            echo "  ✗ $log_file: MANQUANT"
         fi
     done
     
-    # 5. Vérifier l'input Beats dans Logstash
-    print_info "5. Configuration input Beats:"
-    if grep -r "input.*beats" /etc/logstash/conf.d/ 2>/dev/null; then
-        echo "  ✓ Input Beats configuré"
-    else
-        echo "  ✗ Input Beats manquant"
-        print_warning "     SOLUTION: Créer l'input Beats"
+    # 7. Test manuel d'envoi
+    print_info "7. Test manuel d'envoi vers Logstash:"
+    echo "Test avec netcat:"
+    echo '{"test": "manual", "timestamp": "'$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)'"}' | timeout 5 nc 192.168.2.124 5044 2>/dev/null && echo "  ✓ Envoi réussi" || echo "  ✗ Envoi échoué"
+    
+    # 8. Pare-feu local
+    print_info "8. Pare-feu local:"
+    if command -v ufw >/dev/null 2>&1; then
+        echo "UFW status:"
+        ufw status | head -5
     fi
     
-    # 6. Logs récents
-    print_info "6. Logs récents Logstash:"
-    journalctl -u logstash --no-pager -n 5 2>/dev/null | grep -v "^--"
-    
-    echo ""
-
-# ================================
-# PARTIE 2: DIAGNOSTIC VM HONEYPOT (192.168.2.117)
-# ================================
-
-elif [[ $(ip route get 1 | sed -n 's/^.*src \([0-9.]*\) .*$/\1/p') == "192.168.2.117" ]]; then
-    print_status "=== DIAGNOSTIC VM HONEYPOT (192.168.2.117) ==="
-    
-    # 1. Vérifier Filebeat
-    print_info "1. État de Filebeat:"
-    if systemctl is-active --quiet filebeat; then
-        echo "  ✓ Filebeat: ACTIF"
-    else
-        echo "  ✗ Filebeat: ARRÊTÉ"
-        print_warning "     SOLUTION: systemctl start filebeat"
-    fi
-    
-    # 2. Vérifier la configuration Filebeat
-    print_info "2. Configuration Filebeat:"
-    if [ -f "/etc/filebeat/filebeat.yml" ]; then
-        echo "  ✓ Configuration existe"
-        
-        # Test syntaxe
-        if filebeat test config 2>/dev/null; then
-            echo "  ✓ Syntaxe: OK"
-        else
-            echo "  ✗ Syntaxe: ERREUR"
-        fi
-        
-        # Test output
-        if filebeat test output 2>/dev/null; then
-            echo "  ✓ Connexion Logstash: OK"
-        else
-            echo "  ✗ Connexion Logstash: ERREUR"
-        fi
-    else
-        echo "  ✗ Configuration manquante"
-    fi
-    
-    # 3. Vérifier les fichiers de logs source
-    print_info "3. Fichiers de logs surveillés:"
-    
-    # Cowrie SSH
-    COWRIE_LOG="/home/cowrie/cowrie/var/log/cowrie/cowrie.json"
-    if [ -f "$COWRIE_LOG" ]; then
-        SIZE=$(wc -l < "$COWRIE_LOG" 2>/dev/null || echo "0")
-        echo "  ✓ Cowrie SSH: $SIZE lignes ($COWRIE_LOG)"
-    else
-        echo "  ✗ Cowrie SSH: fichier manquant"
-        print_warning "     Vérifier: ls -la /home/cowrie/cowrie/var/log/cowrie/"
-    fi
-    
-    # HTTP Honeypot
-    HTTP_LOG="/var/log/honeypot/http_honeypot.log"
-    if [ -f "$HTTP_LOG" ]; then
-        SIZE=$(wc -l < "$HTTP_LOG" 2>/dev/null || echo "0")
-        echo "  ✓ HTTP Honeypot: $SIZE lignes ($HTTP_LOG)"
-    else
-        echo "  ✗ HTTP Honeypot: fichier manquant"
-        print_warning "     Créer: mkdir -p /var/log/honeypot && touch $HTTP_LOG"
-    fi
-    
-    # FTP Honeypot
-    FTP_LOG="/root/honeypot-ftp/logs/sessions.json"
-    if [ -f "$FTP_LOG" ]; then
-        SIZE=$(wc -l < "$FTP_LOG" 2>/dev/null || echo "0")
-        echo "  ✓ FTP Honeypot: $SIZE lignes ($FTP_LOG)"
-    else
-        echo "  ✗ FTP Honeypot: fichier manquant"
-        print_warning "     Créer: mkdir -p /root/honeypot-ftp/logs && touch $FTP_LOG"
-    fi
-    
-    # 4. Vérifier la connectivité vers ELK
-    print_info "4. Connectivité vers ELK:"
-    if ping -c 2 192.168.2.124 >/dev/null 2>&1; then
-        echo "  ✓ Ping VM ELK: OK"
-    else
-        echo "  ✗ Ping VM ELK: ERREUR"
-    fi
-    
-    if nc -z 192.168.2.124 5044 2>/dev/null; then
-        echo "  ✓ Port Logstash 5044: ACCESSIBLE"
-    else
-        echo "  ✗ Port Logstash 5044: FERMÉ"
-        print_warning "     Vérifier input Beats sur VM ELK"
-    fi
-    
-    # 5. Logs Filebeat récents
-    print_info "5. Logs Filebeat récents:"
-    journalctl -u filebeat --no-pager -n 5 2>/dev/null | grep -v "^--"
-    
-    echo ""
+    echo "iptables OUTPUT:"
+    iptables -L OUTPUT -n | head -5 2>/dev/null || echo "  Pas d'accès iptables"
 
 else
     print_error "Ce script doit être exécuté sur VM ELK (192.168.2.124) ou VM Honeypot (192.168.2.117)"
-    echo "IP actuelle: $(ip route get 1 | sed -n 's/^.*src \([0-9.]*\) .*$/\1/p')"
+    print_error "IP actuelle: $CURRENT_IP"
 fi
 
 # ================================
-# PARTIE 3: SOLUTIONS RAPIDES
+# RECOMMANDATIONS
 # ================================
 
-print_status "=== SOLUTIONS RAPIDES ==="
+print_status "=== ÉTAPES DE RÉSOLUTION ==="
 
-if [[ $(ip route get 1 | sed -n 's/^.*src \([0-9.]*\) .*$/\1/p') == "192.168.2.124" ]]; then
-    echo "Sur VM ELK - Actions à effectuer:"
-    echo ""
-    echo "1. Si input Beats manque dans Logstash:"
-    echo "   cat > /etc/logstash/conf.d/00-beats-input.conf << 'EOF'"
-    echo "   input {"
-    echo "     beats {"
-    echo "       port => 5044"
-    echo "     }"
-    echo "   }"
-    echo "   EOF"
+if [[ "$CURRENT_IP" == "192.168.2.124" ]]; then
+    echo "Sur VM ELK - Actions recommandées:"
+    echo "1. Si port 5044 fermé:"
     echo "   systemctl restart logstash"
     echo ""
-    echo "2. Si pipelines manquent:"
-    echo "   Exécuter: bash fix_logstash_pipelines.sh"
-    echo ""
-    echo "3. Vérifier les logs en temps réel:"
+    echo "2. Si erreurs Logstash:"
     echo "   journalctl -u logstash -f"
-
-elif [[ $(ip route get 1 | sed -n 's/^.*src \([0-9.]*\) .*$/\1/p') == "192.168.2.117" ]]; then
-    echo "Sur VM Honeypot - Actions à effectuer:"
     echo ""
-    echo "1. Si Filebeat arrêté:"
-    echo "   systemctl start filebeat"
-    echo "   systemctl enable filebeat"
+    echo "3. Test manuel de réception:"
+    echo "   nc -l 5044  # Dans un terminal"
+    echo "   # Puis testez depuis VM Honeypot"
+    
+elif [[ "$CURRENT_IP" == "192.168.2.117" ]]; then
+    echo "Sur VM Honeypot - Actions recommandées:"
+    echo "1. Si connexion Logstash échoue:"
+    echo "   systemctl restart filebeat"
     echo ""
-    echo "2. Si fichiers de logs manquent:"
-    echo "   mkdir -p /var/log/honeypot /root/honeypot-ftp/logs"
-    echo "   touch /var/log/honeypot/http_honeypot.log"
-    echo "   touch /root/honeypot-ftp/logs/sessions.json"
+    echo "2. Si logs vides, générer des données:"
+    echo "   echo '{\"test\":\"data\",\"timestamp\":\"'$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)'\"}' >> /var/log/honeypot/http_honeypot.log"
     echo ""
-    echo "3. Générer des logs de test:"
-    echo "   echo '{\"timestamp\":\"'$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)'\",\"test\":\"true\"}' >> /var/log/honeypot/http_honeypot.log"
-    echo ""
-    echo "4. Vérifier les logs Filebeat:"
-    echo "   journalctl -u filebeat -f"
+    echo "3. Test connexion manuelle:"
+    echo "   echo 'test' | nc 192.168.2.124 5044"
 fi
 
-echo ""
-print_info "Commandes de diagnostic rapide:"
-echo "  - Indices Elasticsearch: curl -s 'http://192.168.2.124:9200/_cat/indices?v'"
-echo "  - Santé cluster: curl -s 'http://192.168.2.124:9200/_cluster/health?pretty'"
-echo "  - Stats Logstash: curl -s 'http://192.168.2.124:9600/_node/stats/pipelines?pretty'"
-echo ""
-print_status "Diagnostic terminé - Analysez les erreurs ci-dessus"
+print_status "Exécutez ce diagnostic sur les DEUX VMs pour identifier le problème!"
