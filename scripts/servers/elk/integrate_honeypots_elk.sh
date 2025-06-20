@@ -56,6 +56,7 @@ filebeat.inputs:
   paths:
     - /home/cowrie/cowrie/var/log/cowrie/cowrie.json*
     - /home/cowrie/cowrie/var/log/cowrie/*.json*
+    - /home/cowrie/cowrie/var/log/cowrie/*.log*
   fields:
     honeypot_type: ssh
     honeypot_service: cowrie
@@ -350,7 +351,8 @@ fi
 print_status "Vérification des fichiers de logs..."
 
 logs_to_check=(
-    "/home/cowrie/cowrie/var/log/cowrie/cowrie.json"
+    "/home/cowrie/cowrie/var/log/cowrie/cowrie.json.1"
+    "/home/cowrie/cowrie/var/log/cowrie/cowrie.log.1"
     "/var/log/honeypot/http_honeypot.log"
     "/var/log/honeypot/sql_injection.log"
     "/var/log/honeypot/api_access.log"
