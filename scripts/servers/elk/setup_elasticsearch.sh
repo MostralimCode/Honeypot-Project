@@ -1,5 +1,4 @@
 #!/bin/bash
-# scripts/elk/configure_elasticsearch_indices.sh
 # Configuration des indices Elasticsearch pour les honeypots
 # Étape 5.4 du projet
 
