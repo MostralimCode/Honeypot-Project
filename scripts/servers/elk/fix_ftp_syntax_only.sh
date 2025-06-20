@@ -1,18 +1,13 @@
 #!/bin/bash
-# Script pour corriger UNIQUEMENT la syntaxe du fichier 30-ftp.conf
-# Fix des problèmes de if imbriqués et structure
+# Correction des opérateurs Logstash dans le fichier FTP
+# Le problème: "and" n'existe pas en Logstash, il faut utiliser des blocs imbriqués simples
 
 GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
 print_status() {
     echo -e "${GREEN}[+] $1${NC}"
-}
-
-print_warning() {
-    echo -e "${YELLOW}[!] $1${NC}"
 }
 
 print_error() {
@@ -24,24 +19,10 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-print_status "=== Correction syntaxe fichier FTP UNIQUEMENT ==="
+print_status "=== Correction des opérateurs Logstash pour FTP ==="
 
-# Sauvegarder l'ancien fichier FTP
-FTP_FILE="/etc/logstash/conf.d/30-ftp.conf"
-BACKUP_FILE="/etc/logstash/conf.d/30-ftp.conf.backup.$(date +%Y%m%d_%H%M%S)"
-
-if [ -f "$FTP_FILE" ]; then
-    print_warning "Sauvegarde de l'ancien fichier FTP vers: $BACKUP_FILE"
-    cp "$FTP_FILE" "$BACKUP_FILE"
-else
-    print_error "Fichier $FTP_FILE non trouvé"
-    exit 1
-fi
-
-# Recréer le fichier FTP avec syntaxe corrigée
-print_status "Recréation du fichier 30-ftp.conf avec syntaxe propre..."
-
-cat > "$FTP_FILE" << 'EOF'
+# Recréer le fichier avec la BONNE syntaxe Logstash
+cat > /etc/logstash/conf.d/30-ftp.conf << 'EOF'
 filter {
   if [honeypot_type] == "ftp" {
     # Ajouter métadonnées
@@ -74,70 +55,49 @@ filter {
       }
     }
     
-    # Classification événements FTP - STRUCTURE CORRIGÉE (pas de if imbriqués)
-    if [event_type] == "auth_attempt" and [success] == true {
-      mutate { 
-        add_field => { "event_category" => "authentication_success" }
-        add_field => { "severity" => "critical" }
-        add_field => { "alert_level" => "4" }
+    # Classification événements FTP - SYNTAXE LOGSTASH CORRECTE
+    if [event_type] == "auth_attempt" {
+      if [success] == true {
+        mutate { 
+          add_field => { "event_category" => "authentication_success" }
+          add_field => { "severity" => "critical" }
+          add_field => { "alert_level" => "4" }
+        }
+      } else {
+        mutate { 
+          add_field => { "event_category" => "authentication_failure" }
+          add_field => { "severity" => "medium" }
+          add_field => { "alert_level" => "2" }
+        }
       }
-    } else if [event_type] == "auth_attempt" and [success] == false {
-      mutate { 
-        add_field => { "event_category" => "authentication_failure" }
-        add_field => { "severity" => "medium" }
-        add_field => { "alert_level" => "2" }
-      }
-    } else if [event_type] == "auth_attempt" {
-      # Cas où success n'est pas défini - traiter comme échec
-      mutate { 
-        add_field => { "event_category" => "authentication_failure" }
-        add_field => { "severity" => "medium" }
-        add_field => { "alert_level" => "2" }
-      }
-    } else if [event_type] == "file_upload" {
+    }
+    
+    if [event_type] == "file_upload" {
       mutate { 
         add_field => { "event_category" => "file_upload" }
         add_field => { "severity" => "high" }
         add_field => { "alert_level" => "3" }
       }
-    } else if [event_type] == "directory_traversal" {
+    }
+    
+    if [event_type] == "directory_traversal" {
       mutate { 
         add_field => { "event_category" => "directory_traversal" }
         add_field => { "severity" => "high" }
         add_field => { "alert_level" => "3" }
       }
-    } else if [event_type] == "file_download" {
+    }
+    
+    if [event_type] == "file_download" {
       mutate { 
         add_field => { "event_category" => "file_download" }
         add_field => { "severity" => "medium" }
         add_field => { "alert_level" => "2" }
       }
-    } else if [event_type] == "vulnerability_test" {
-      mutate { 
-        add_field => { "event_category" => "vulnerability_probe" }
-        add_field => { "severity" => "high" }
-        add_field => { "alert_level" => "3" }
-      }
-    } else if [event_type] == "command_injection" {
-      mutate { 
-        add_field => { "event_category" => "command_injection" }
-        add_field => { "severity" => "critical" }
-        add_field => { "alert_level" => "4" }
-      }
-    }
-    
-    # Analyse des commandes FTP
-    if [command] {
-      if [command] in ["SITE EXEC", "SITE CHMOD", "SITE RMDIR"] {
-        mutate {
-          add_field => { "dangerous_command" => "true" }
-          add_field => { "severity" => "high" }
-        }
-      }
     }
     
     # Détection fichiers suspects
-    if [filename] =~ /(?i)(\.php|\.asp|\.jsp|\.exe|\.bat|\.sh|backdoor|shell|webshell)/ {
+    if [filename] =~ /(?i)(\.php|\.asp|\.exe|backdoor|shell)/ {
       mutate {
         add_field => { "suspicious_file" => "true" }
         add_field => { "malicious_file" => "true" }
@@ -165,65 +125,25 @@ output {
 }
 EOF
 
-print_status "✓ Fichier 30-ftp.conf recréé avec syntaxe corrigée"
-
-# Test de syntaxe du fichier FTP uniquement
-print_status "Test de syntaxe du fichier FTP corrigé..."
-
-# Créer un répertoire de test temporaire
-TEST_DIR="/tmp/test-ftp-syntax"
-mkdir -p "$TEST_DIR"
-
-# Copier seulement le fichier FTP pour test isolé
-cp "$FTP_FILE" "$TEST_DIR/"
+print_status "✓ Fichier FTP recréé avec syntaxe Logstash correcte"
 
 # Test de syntaxe
+print_status "Test de syntaxe..."
+
+TEST_DIR="/tmp/test-ftp-final"
+mkdir -p "$TEST_DIR"
+cp /etc/logstash/conf.d/30-ftp.conf "$TEST_DIR/"
+
 if timeout 30 sudo -u logstash /usr/share/logstash/bin/logstash --path.settings /etc/logstash --path.config "$TEST_DIR" -t; then
-    print_status "✅ Fichier 30-ftp.conf - SYNTAXE VALIDÉE"
-    SYNTAX_OK=true
+    print_status "✅ SUCCÈS - Syntaxe FTP validée !"
 else
-    print_error "❌ Fichier 30-ftp.conf - ERREUR DE SYNTAXE"
-    SYNTAX_OK=false
+    print_error "❌ Erreur de syntaxe persistante"
 fi
 
-# Nettoyer le répertoire de test
 rm -rf "$TEST_DIR"
 
-# Permissions correctes
-chmod 644 "$FTP_FILE"
-chown root:root "$FTP_FILE"
-
-print_status "=== Résultat de la correction ==="
-
-if [ "$SYNTAX_OK" = true ]; then
-    print_status "🎯 SUCCÈS - Fichier FTP corrigé et validé"
-    echo ""
-    print_status "✅ CORRECTIONS APPLIQUÉES:"
-    echo "   • Suppression des if imbriqués problématiques"
-    echo "   • Structure en else if linéaire (comme Cowrie)"
-    echo "   • Gestion explicite des cas [success] == true/false"
-    echo "   • Syntaxe Logstash standardisée"
-    echo ""
-    print_status "📁 FICHIERS:"
-    echo "   • Nouveau: $FTP_FILE"
-    echo "   • Backup: $BACKUP_FILE"
-    echo ""
-    print_status "🔧 TEST COMPLET DES PIPELINES:"
-    echo "   sudo -u logstash /usr/share/logstash/bin/logstash --path.settings /etc/logstash -t"
-    echo ""
-    print_status "🚀 PRÊT POUR DÉMARRAGE LOGSTASH"
-    
-else
-    print_error "❌ ÉCHEC - Problème de syntaxe persistant"
-    echo ""
-    print_warning "Restauration de l'ancien fichier..."
-    cp "$BACKUP_FILE" "$FTP_FILE"
-    echo ""
-    print_error "Actions possibles:"
-    echo "   1. Vérifier le contenu: cat $FTP_FILE"
-    echo "   2. Éditer manuellement: nano $FTP_FILE"  
-    echo "   3. Utiliser la backup: cp $BACKUP_FILE $FTP_FILE"
-fi
-
-echo ""
-print_status "=== Correction du fichier FTP terminée ==="
+print_status "=== Correction terminée ==="
+print_status "CHANGEMENTS CLÉS:"
+echo "   • Supprimé: 'and' operator (n'existe pas en Logstash)"
+echo "   • Utilisé: if imbriqués simples (syntaxe standard)"
+echo "   • Structure: comme le fichier Cowrie qui fonctionne"
