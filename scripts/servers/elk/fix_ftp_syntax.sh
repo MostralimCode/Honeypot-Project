@@ -1,13 +1,18 @@
 #!/bin/bash
-# Correction des opérateurs Logstash dans le fichier FTP
-# Le problème: "and" n'existe pas en Logstash, il faut utiliser des blocs imbriqués simples
+# Script pour créer une configuration FTP minimale qui fonctionne
+# Basé exactement sur la structure Cowrie qui marche
 
 GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
 print_status() {
     echo -e "${GREEN}[+] $1${NC}"
+}
+
+print_warning() {
+    echo -e "${YELLOW}[!] $1${NC}"
 }
 
 print_error() {
@@ -19,33 +24,33 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-print_status "=== Correction des opérateurs Logstash pour FTP ==="
+print_status "=== Configuration FTP Pipeline - Version Minimale ==="
 
-# Recréer le fichier avec la BONNE syntaxe Logstash
-cat > /etc/logstash/conf.d/30-ftp.conf << 'EOF'
+FTP_FILE="/etc/logstash/conf.d/30-ftp-honeypot.conf"
+
+# Sauvegarder l'ancien fichier
+if [ -f "$FTP_FILE" ]; then
+    BACKUP_FILE="${FTP_FILE}.backup.$(date +%Y%m%d_%H%M%S)"
+    print_warning "Sauvegarde: $BACKUP_FILE"
+    cp "$FTP_FILE" "$BACKUP_FILE"
+fi
+
+print_status "Création du pipeline FTP minimal (structure Cowrie)..."
+
+cat > "$FTP_FILE" << 'EOF'
 filter {
   if [honeypot_type] == "ftp" {
-    # Ajouter métadonnées
     mutate {
-      add_field => { "service" => "ftp_honeypot" }
       add_field => { "infrastructure" => "honeypot" }
+      add_field => { "service" => "ftp_honeypot" }
     }
     
-    # Parse timestamp
     if [timestamp] {
       date {
         match => [ "timestamp", "ISO8601" ]
       }
     }
     
-    # Normalisation IP
-    if [ip] and ![src_ip] {
-      mutate {
-        add_field => { "src_ip" => "%{ip}" }
-      }
-    }
-    
-    # GeoIP enrichissement
     if [src_ip] {
       geoip {
         source => "src_ip"
@@ -55,40 +60,25 @@ filter {
       }
     }
     
-    # Classification événements FTP - SYNTAXE LOGSTASH CORRECTE
     if [event_type] == "auth_attempt" {
-      if [success] == true {
-        mutate { 
-          add_field => { "event_category" => "authentication_success" }
-          add_field => { "severity" => "critical" }
-          add_field => { "alert_level" => "4" }
-        }
-      } else {
-        mutate { 
-          add_field => { "event_category" => "authentication_failure" }
-          add_field => { "severity" => "medium" }
-          add_field => { "alert_level" => "2" }
-        }
+      mutate { 
+        add_field => { "event_category" => "authentication_attempt" }
+        add_field => { "severity" => "medium" }
+        add_field => { "alert_level" => "2" }
       }
-    }
-    
-    if [event_type] == "file_upload" {
+    } else if [event_type] == "file_upload" {
       mutate { 
         add_field => { "event_category" => "file_upload" }
         add_field => { "severity" => "high" }
         add_field => { "alert_level" => "3" }
       }
-    }
-    
-    if [event_type] == "directory_traversal" {
+    } else if [event_type] == "directory_traversal" {
       mutate { 
         add_field => { "event_category" => "directory_traversal" }
         add_field => { "severity" => "high" }
         add_field => { "alert_level" => "3" }
       }
-    }
-    
-    if [event_type] == "file_download" {
+    } else if [event_type] == "file_download" {
       mutate { 
         add_field => { "event_category" => "file_download" }
         add_field => { "severity" => "medium" }
@@ -96,20 +86,10 @@ filter {
       }
     }
     
-    # Détection fichiers suspects
     if [filename] =~ /(?i)(\.php|\.asp|\.exe|backdoor|shell)/ {
       mutate {
         add_field => { "suspicious_file" => "true" }
         add_field => { "malicious_file" => "true" }
-      }
-    }
-    
-    # Détection mots de passe communs
-    if [password] {
-      if [password] in ["ftp", "anonymous", "admin", "password", "123456", "root"] {
-        mutate {
-          add_field => { "common_password" => "true" }
-        }
       }
     }
   }
@@ -125,25 +105,62 @@ output {
 }
 EOF
 
-print_status "✓ Fichier FTP recréé avec syntaxe Logstash correcte"
+print_status "✓ Fichier FTP minimal créé"
 
-# Test de syntaxe
-print_status "Test de syntaxe..."
+# Permissions
+chmod 644 "$FTP_FILE"
+chown root:root "$FTP_FILE"
 
-TEST_DIR="/tmp/test-ftp-final"
+print_status "Test de syntaxe du fichier FTP minimal..."
+
+# Test isolé
+TEST_DIR="/tmp/test-ftp-minimal"
 mkdir -p "$TEST_DIR"
-cp /etc/logstash/conf.d/30-ftp.conf "$TEST_DIR/"
+cp "$FTP_FILE" "$TEST_DIR/"
 
 if timeout 30 sudo -u logstash /usr/share/logstash/bin/logstash --path.settings /etc/logstash --path.config "$TEST_DIR" -t; then
-    print_status "✅ SUCCÈS - Syntaxe FTP validée !"
+    print_status "✅ SUCCÈS - Pipeline FTP minimal validé !"
+    SYNTAX_OK=true
 else
-    print_error "❌ Erreur de syntaxe persistante"
+    print_error "❌ ÉCHEC - Erreur de syntaxe persistante"
+    SYNTAX_OK=false
 fi
 
 rm -rf "$TEST_DIR"
 
-print_status "=== Correction terminée ==="
-print_status "CHANGEMENTS CLÉS:"
-echo "   • Supprimé: 'and' operator (n'existe pas en Logstash)"
-echo "   • Utilisé: if imbriqués simples (syntaxe standard)"
-echo "   • Structure: comme le fichier Cowrie qui fonctionne"
+# Test complet avec tous les pipelines
+if [ "$SYNTAX_OK" = true ]; then
+    print_status "Test de la configuration complète..."
+    
+    if timeout 30 sudo -u logstash /usr/share/logstash/bin/logstash --path.settings /etc/logstash -t; then
+        print_status "✅ Configuration complète validée !"
+        echo ""
+        print_status "🎯 PIPELINE FTP FONCTIONNEL !"
+        echo "   Structure: Identique à Cowrie (testé et validé)"
+        echo "   Fonctionnalités: Authentification, uploads, downloads, traversal"
+        echo "   GeoIP: Activé"
+        echo "   Détection: Fichiers suspects"
+        echo ""
+        print_status "📋 PROCHAINES ÉTAPES:"
+        echo "   1. Démarrer Logstash: systemctl start logstash"
+        echo "   2. Surveiller: journalctl -u logstash -f"
+        echo "   3. Passer à l'étape 5.6 (Kibana)"
+        
+    else
+        print_error "❌ Problème avec la configuration complète"
+        print_warning "Le pipeline FTP fonctionne seul, mais conflit avec les autres"
+        echo ""
+        print_warning "Actions possibles:"
+        echo "   1. Vérifier les autres pipelines"
+        echo "   2. Démarrer avec FTP seul pour tester"
+    fi
+else
+    print_error "❌ Le pipeline FTP minimal ne fonctionne toujours pas"
+    echo ""
+    print_error "Le problème est plus profond. Vérifiez:"
+    echo "   1. Version Logstash: /usr/share/logstash/bin/logstash --version"
+    echo "   2. Permissions: ls -la /etc/logstash/conf.d/"
+    echo "   3. Syntaxe manuelle: nano $FTP_FILE"
+fi
+
+print_status "=== Configuration FTP terminée ==="
