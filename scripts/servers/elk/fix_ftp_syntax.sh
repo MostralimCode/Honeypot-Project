@@ -26,7 +26,7 @@ fi
 
 print_status "=== Configuration FTP Pipeline - Version Minimale ==="
 
-FTP_FILE="/etc/logstash/conf.d/30-ftp-honeypot.conf"
+FTP_FILE="/etc/logstash/conf.d/30-ftp.conf"
 
 # Sauvegarder l'ancien fichier
 if [ -f "$FTP_FILE" ]; then
