@@ -1,5 +1,4 @@
 #!/bin/bash
-# scripts/elk/test_elk_integration_complete.sh
 # Test complet de l'intégration ELK Stack - Étape 5.7
 # Validation de toute la chaîne : Données → Logstash → Elasticsearch → Kibana
 
