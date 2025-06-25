@@ -1,5 +1,5 @@
 #!/bin/bash
-# Script d'envoi automatique des logs honeypot vers Logstash TCP
+# Script d'envoi automatique des logs honeypot vers Logstash TCP - VERSION CORRIGÉE
 # VM Honeypot: 192.168.2.117 → VM ELK: 192.168.2.124:5046
 
 LOGSTASH_HOST="192.168.2.124"
@@ -10,15 +10,28 @@ POSITION_FILE="$LOG_DIR/positions.txt"
 # Créer le répertoire de logs
 mkdir -p "$LOG_DIR"
 
-# Fonction d'envoi
+# Fonction d'envoi sécurisée
 send_log() {
     local log_entry="$1"
-    echo "$log_entry" | nc -w 2 "$LOGSTASH_HOST" "$LOGSTASH_PORT" 2>/dev/null
-    if [ $? -eq 0 ]; then
-        echo "$(date): Sent - $log_entry" >> "$LOG_DIR/sent.log"
+    
+    # Vérifier que c'est du JSON valide avant envoi
+    if echo "$log_entry" | jq . >/dev/null 2>&1; then
+        echo "$log_entry" | nc -w 2 "$LOGSTASH_HOST" "$LOGSTASH_PORT" 2>/dev/null
+        if [ $? -eq 0 ]; then
+            echo "$(date '+%Y-%m-%d %H:%M:%S'): SUCCESS - Sent log for $(echo "$log_entry" | jq -r '.honeypot_type // "unknown"')" >> "$LOG_DIR/sent.log"
+        else
+            echo "$(date '+%Y-%m-%d %H:%M:%S'): NETWORK_ERROR - Failed to send" >> "$LOG_DIR/failed.log"
+        fi
     else
-        echo "$(date): Failed - $log_entry" >> "$LOG_DIR/failed.log"
+        echo "$(date '+%Y-%m-%d %H:%M:%S'): JSON_ERROR - Invalid JSON: $log_entry" >> "$LOG_DIR/failed.log"
     fi
+}
+
+# Fonction de nettoyage de chaîne pour JSON
+clean_string() {
+    local input="$1"
+    # Échapper les caractères spéciaux JSON et supprimer les caractères de contrôle
+    echo "$input" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g; s/\r/\\r/g; s/\n/\\n/g' | tr -d '\000-\010\013\014\016-\037'
 }
 
 # Fonction de lecture avec position
@@ -69,38 +82,97 @@ declare -A LOG_SOURCES=(
     ["/root/honeypot-ftp/logs/transfers.log"]="ftp:transfers:text"
 )
 
-echo "$(date): Starting honeypot log sender" >> "$LOG_DIR/sender.log"
+echo "$(date '+%Y-%m-%d %H:%M:%S'): Starting honeypot log sender" >> "$LOG_DIR/sender.log"
+
+# Test de connectivité initial
+if ! nc -z "$LOGSTASH_HOST" "$LOGSTASH_PORT" 2>/dev/null; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S'): ERROR - Cannot connect to Logstash at $LOGSTASH_HOST:$LOGSTASH_PORT" >> "$LOG_DIR/sender.log"
+    sleep 30
+fi
 
 # Boucle principale
 while true; do
     for log_file in "${!LOG_SOURCES[@]}"; do
-        if [ -f "$log_file" ]; then
+        if [ -f "$log_file" ] && [ -r "$log_file" ]; then
             IFS=':' read -r honeypot_type service log_format <<< "${LOG_SOURCES[$log_file]}"
             position_key=$(echo "$log_file" | sed 's/[^a-zA-Z0-9]/_/g')
             
             # Lire les nouvelles lignes
             read_from_position "$log_file" "$position_key" | while IFS= read -r line; do
-                if [ -n "$line" ]; then
+                if [ -n "$line" ] && [ "$line" != "null" ]; then
+                    current_timestamp=$(date -Iseconds)
+                    
                     if [ "$log_format" = "json" ]; then
-                        # Pour les logs JSON, ajouter des métadonnées
-                        enhanced_log=$(echo "$line" | jq --arg ht "$honeypot_type" --arg svc "$service" --arg vm "192.168.2.117" '. + {honeypot_type: $ht, honeypot_service: $svc, source_vm: $vm}' 2>/dev/null)
-                        
-                        if [ $? -eq 0 ] && [ -n "$enhanced_log" ]; then
-                            send_log "$enhanced_log"
+                        # Vérifier si c'est déjà du JSON valide
+                        if echo "$line" | jq . >/dev/null 2>&1; then
+                            # JSON valide, ajouter métadonnées
+                            enhanced_log=$(echo "$line" | jq --arg ht "$honeypot_type" --arg svc "$service" --arg vm "192.168.2.117" --arg ts "$current_timestamp" '. + {
+                                honeypot_type: $ht,
+                                honeypot_service: $svc,
+                                source_vm: $vm,
+                                processed_timestamp: $ts,
+                                log_format: "json"
+                            }')
+                            
+                            if [ $? -eq 0 ] && [ -n "$enhanced_log" ]; then
+                                send_log "$enhanced_log"
+                            else
+                                echo "$(date '+%Y-%m-%d %H:%M:%S'): JQ_ERROR - Failed to enhance JSON from $log_file" >> "$LOG_DIR/failed.log"
+                            fi
                         else
-                            # Si jq échoue, créer un JSON simple
-                            simple_json="{\"honeypot_type\":\"$honeypot_type\",\"honeypot_service\":\"$service\",\"source_vm\":\"192.168.2.117\",\"message\":$(echo "$line" | jq -R .),\"timestamp\":\"$(date -Iseconds)\"}"
-                            send_log "$simple_json"
+                            # JSON invalide ou malformé, encapsuler en sécurité
+                            clean_message=$(clean_string "$line")
+                            fallback_json="{
+                                \"honeypot_type\": \"$honeypot_type\",
+                                \"honeypot_service\": \"$service\",
+                                \"source_vm\": \"192.168.2.117\",
+                                \"log_format\": \"json_fallback\",
+                                \"raw_message\": \"$clean_message\",
+                                \"timestamp\": \"$current_timestamp\",
+                                \"processing_note\": \"Original JSON was malformed\"
+                            }"
+                            
+                            # Compacter le JSON
+                            compact_json=$(echo "$fallback_json" | jq -c .)
+                            if [ $? -eq 0 ]; then
+                                send_log "$compact_json"
+                            else
+                                echo "$(date '+%Y-%m-%d %H:%M:%S'): FALLBACK_ERROR - Could not create fallback JSON for: $line" >> "$LOG_DIR/failed.log"
+                            fi
                         fi
                     else
-                        # Pour les logs texte, créer un JSON
-                        text_json="{\"honeypot_type\":\"$honeypot_type\",\"honeypot_service\":\"$service\",\"source_vm\":\"192.168.2.117\",\"log_format\":\"text\",\"message\":$(echo "$line" | jq -R .),\"timestamp\":\"$(date -Iseconds)\"}"
-                        send_log "$text_json"
+                        # Pour les logs texte, créer un JSON propre
+                        clean_message=$(clean_string "$line")
+                        text_json="{
+                            \"honeypot_type\": \"$honeypot_type\",
+                            \"honeypot_service\": \"$service\",
+                            \"source_vm\": \"192.168.2.117\",
+                            \"log_format\": \"text\",
+                            \"message\": \"$clean_message\",
+                            \"timestamp\": \"$current_timestamp\"
+                        }"
+                        
+                        # Compacter le JSON
+                        compact_json=$(echo "$text_json" | jq -c .)
+                        if [ $? -eq 0 ]; then
+                            send_log "$compact_json"
+                        else
+                            echo "$(date '+%Y-%m-%d %H:%M:%S'): TEXT_JSON_ERROR - Could not create JSON for text log: $line" >> "$LOG_DIR/failed.log"
+                        fi
                     fi
                 fi
             done
+        elif [ ! -f "$log_file" ]; then
+            # Log au démarrage seulement
+            if [ ! -f "$LOG_DIR/.missing_logged" ]; then
+                echo "$(date '+%Y-%m-%d %H:%M:%S'): WARNING - Log file missing: $log_file" >> "$LOG_DIR/sender.log"
+                touch "$LOG_DIR/.missing_logged"
+            fi
         fi
     done
+    
+    # Nettoyage périodique des logs (garder 7 jours)
+    find "$LOG_DIR" -name "*.log" -mtime +7 -delete 2>/dev/null
     
     # Attendre avant la prochaine vérification
     sleep 5
