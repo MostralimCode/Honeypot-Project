@@ -1,6 +1,7 @@
 #!/bin/bash
-# Script d'envoi automatique des logs honeypot vers Logstash TCP - VERSION CORRIGÉE
+# Script d'envoi automatique des logs honeypot vers Logstash TCP - VERSION ADAPTÉE
 # VM Honeypot: 192.168.2.117 → VM ELK: 192.168.2.124:5046
+# Traite spécifiquement chaque format de log
 
 LOGSTASH_HOST="192.168.2.124"
 LOGSTASH_PORT="5046"
@@ -13,17 +14,18 @@ mkdir -p "$LOG_DIR"
 # Fonction d'envoi sécurisée
 send_log() {
     local log_entry="$1"
+    local source_info="$2"
     
     # Vérifier que c'est du JSON valide avant envoi
     if echo "$log_entry" | jq . >/dev/null 2>&1; then
         echo "$log_entry" | nc -w 2 "$LOGSTASH_HOST" "$LOGSTASH_PORT" 2>/dev/null
         if [ $? -eq 0 ]; then
-            echo "$(date '+%Y-%m-%d %H:%M:%S'): SUCCESS - Sent log for $(echo "$log_entry" | jq -r '.honeypot_type // "unknown"')" >> "$LOG_DIR/sent.log"
+            echo "$(date '+%Y-%m-%d %H:%M:%S'): SUCCESS - $source_info" >> "$LOG_DIR/sent.log"
         else
-            echo "$(date '+%Y-%m-%d %H:%M:%S'): NETWORK_ERROR - Failed to send" >> "$LOG_DIR/failed.log"
+            echo "$(date '+%Y-%m-%d %H:%M:%S'): NETWORK_ERROR - $source_info" >> "$LOG_DIR/failed.log"
         fi
     else
-        echo "$(date '+%Y-%m-%d %H:%M:%S'): JSON_ERROR - Invalid JSON: $log_entry" >> "$LOG_DIR/failed.log"
+        echo "$(date '+%Y-%m-%d %H:%M:%S'): JSON_ERROR - $source_info - $log_entry" >> "$LOG_DIR/failed.log"
     fi
 }
 
@@ -62,27 +64,78 @@ read_from_position() {
     fi
 }
 
-# CONFIGURATION DES SOURCES DE LOGS
+# Traitement spécialisé pour les logs FTP texte
+process_ftp_text() {
+    local line="$1"
+    local service="$2"
+    local current_timestamp="$3"
+    
+    # Format FTP: 2025-05-05 16:56:52 - INFO - Auth SUCCESS - 127.0.0.1 - admin
+    if [[ "$line" =~ ^([0-9-]+\ [0-9:]+)\ -\ ([A-Z]+)\ -\ (.+)\ -\ ([0-9.]+)\ -\ (.+)$ ]]; then
+        local log_date="${BASH_REMATCH[1]}"
+        local log_level="${BASH_REMATCH[2]}"
+        local log_action="${BASH_REMATCH[3]}"
+        local log_ip="${BASH_REMATCH[4]}"
+        local log_user="${BASH_REMATCH[5]}"
+        
+        local json_log="{
+            \"honeypot_type\": \"ftp\",
+            \"honeypot_service\": \"$service\",
+            \"source_vm\": \"192.168.2.117\",
+            \"log_format\": \"ftp_text\",
+            \"timestamp\": \"$current_timestamp\",
+            \"original_timestamp\": \"$log_date\",
+            \"level\": \"$log_level\",
+            \"action\": \"$log_action\",
+            \"ip\": \"$log_ip\",
+            \"username\": \"$log_user\",
+            \"message\": \"$(clean_string "$line")\"
+        }"
+        
+        compact_json=$(echo "$json_log" | jq -c .)
+        if [ $? -eq 0 ]; then
+            send_log "$compact_json" "FTP_TEXT[$service]"
+        fi
+    else
+        # Format non reconnu, encapsuler simplement
+        local fallback_json="{
+            \"honeypot_type\": \"ftp\",
+            \"honeypot_service\": \"$service\",
+            \"source_vm\": \"192.168.2.117\",
+            \"log_format\": \"ftp_text_fallback\",
+            \"timestamp\": \"$current_timestamp\",
+            \"message\": \"$(clean_string "$line")\"
+        }"
+        
+        compact_json=$(echo "$fallback_json" | jq -c .)
+        if [ $? -eq 0 ]; then
+            send_log "$compact_json" "FTP_TEXT_FALLBACK[$service]"
+        fi
+    fi
+}
+
+# CONFIGURATION DES SOURCES DE LOGS AVEC TYPES SPÉCIALISÉS
 declare -A LOG_SOURCES=(
-    # Cowrie SSH
-    ["/home/cowrie/cowrie/var/log/cowrie/cowrie.json"]="ssh:cowrie:json"
+    # Cowrie SSH - JSON spécialisé
+    ["/home/cowrie/cowrie/var/log/cowrie/cowrie.json"]="ssh:cowrie:cowrie_json"
+    ["/home/cowrie/cowrie/var/log/cowrie/cowrie.json.1"]="ssh:cowrie:cowrie_json"
     
-    # HTTP Honeypot
-    ["/var/log/honeypot/http_honeypot.log"]="http:main:json"
-    ["/var/log/honeypot/api_access.log"]="http:api:json"
-    ["/var/log/honeypot/sql_injection.log"]="http:sql:json"
-    ["/var/log/honeypot/critical_alerts.log"]="http:critical:json"
-    ["/var/log/honeypot/sql_error.log"]="http:error:json"
+    # HTTP Honeypot - JSON spécialisé
+    ["/var/log/honeypot/http_honeypot.log"]="http:main:http_json"
+    ["/var/log/honeypot/api_access.log"]="http:api:http_json"
+    ["/var/log/honeypot/sql_injection.log"]="http:sql:http_json"
+    ["/var/log/honeypot/critical_alerts.log"]="http:critical:http_json"
+    ["/var/log/honeypot/sql_error.log"]="http:error:http_json"
     
-    # FTP Honeypot
-    ["/root/honeypot-ftp/logs/sessions.json"]="ftp:sessions:json"
-    ["/root/honeypot-ftp/logs/auth_attempts.log"]="ftp:auth:text"
-    ["/root/honeypot-ftp/logs/commands.log"]="ftp:commands:text"
-    ["/root/honeypot-ftp/logs/security_events.log"]="ftp:security:text"
-    ["/root/honeypot-ftp/logs/transfers.log"]="ftp:transfers:text"
+    # FTP Honeypot - Mixte JSON et texte
+    ["/root/honeypot-ftp/logs/sessions.json"]="ftp:sessions:ftp_json"
+    ["/root/honeypot-ftp/logs/auth_attempts.log"]="ftp:auth:ftp_text"
+    ["/root/honeypot-ftp/logs/commands.log"]="ftp:commands:ftp_text"
+    ["/root/honeypot-ftp/logs/security_events.log"]="ftp:security:ftp_text"
+    ["/root/honeypot-ftp/logs/transfers.log"]="ftp:transfers:ftp_text"
 )
 
-echo "$(date '+%Y-%m-%d %H:%M:%S'): Starting honeypot log sender" >> "$LOG_DIR/sender.log"
+echo "$(date '+%Y-%m-%d %H:%M:%S'): Starting specialized honeypot log sender" >> "$LOG_DIR/sender.log"
 
 # Test de connectivité initial
 if ! nc -z "$LOGSTASH_HOST" "$LOGSTASH_PORT" 2>/dev/null; then
@@ -102,72 +155,109 @@ while true; do
                 if [ -n "$line" ] && [ "$line" != "null" ]; then
                     current_timestamp=$(date -Iseconds)
                     
-                    if [ "$log_format" = "json" ]; then
-                        # Vérifier si c'est déjà du JSON valide
-                        if echo "$line" | jq . >/dev/null 2>&1; then
-                            # JSON valide, ajouter métadonnées
-                            enhanced_log=$(echo "$line" | jq --arg ht "$honeypot_type" --arg svc "$service" --arg vm "192.168.2.117" --arg ts "$current_timestamp" '. + {
-                                honeypot_type: $ht,
-                                honeypot_service: $svc,
-                                source_vm: $vm,
-                                processed_timestamp: $ts,
-                                log_format: "json"
-                            }')
-                            
-                            if [ $? -eq 0 ] && [ -n "$enhanced_log" ]; then
-                                send_log "$enhanced_log"
-                            else
-                                echo "$(date '+%Y-%m-%d %H:%M:%S'): JQ_ERROR - Failed to enhance JSON from $log_file" >> "$LOG_DIR/failed.log"
+                    case "$log_format" in
+                        "cowrie_json")
+                            # Traitement spécialisé Cowrie
+                            if echo "$line" | jq . >/dev/null 2>&1; then
+                                enhanced_log=$(echo "$line" | jq --arg ht "$honeypot_type" --arg svc "$service" --arg vm "192.168.2.117" --arg ts "$current_timestamp" '{
+                                    honeypot_type: $ht,
+                                    honeypot_service: $svc,
+                                    source_vm: $vm,
+                                    processed_timestamp: $ts,
+                                    log_format: "cowrie",
+                                    cowrie_data: {
+                                        eventid: .eventid,
+                                        timestamp: .timestamp,
+                                        src_ip: .src_ip,
+                                        session: .session,
+                                        message: .message
+                                    },
+                                    original_log: .
+                                }')
+                                
+                                if [ $? -eq 0 ] && [ -n "$enhanced_log" ]; then
+                                    send_log "$enhanced_log" "COWRIE[$service]"
+                                fi
                             fi
-                        else
-                            # JSON invalide ou malformé, encapsuler en sécurité
+                            ;;
+                            
+                        "http_json")
+                            # Traitement spécialisé HTTP
+                            if echo "$line" | jq . >/dev/null 2>&1; then
+                                enhanced_log=$(echo "$line" | jq --arg ht "$honeypot_type" --arg svc "$service" --arg vm "192.168.2.117" --arg ts "$current_timestamp" '{
+                                    honeypot_type: $ht,
+                                    honeypot_service: $svc,
+                                    source_vm: $vm,
+                                    processed_timestamp: $ts,
+                                    log_format: "http",
+                                    http_data: {
+                                        attack_id: .attack_id,
+                                        attack_type: .attack_type,
+                                        severity: .severity,
+                                        ip: .ip,
+                                        method: .method,
+                                        path: .path,
+                                        user_agent: .user_agent
+                                    },
+                                    original_log: .
+                                }')
+                                
+                                if [ $? -eq 0 ] && [ -n "$enhanced_log" ]; then
+                                    send_log "$enhanced_log" "HTTP[$service]"
+                                fi
+                            fi
+                            ;;
+                            
+                        "ftp_json")
+                            # Traitement spécialisé FTP JSON
+                            if echo "$line" | jq . >/dev/null 2>&1; then
+                                enhanced_log=$(echo "$line" | jq --arg ht "$honeypot_type" --arg svc "$service" --arg vm "192.168.2.117" --arg ts "$current_timestamp" '{
+                                    honeypot_type: $ht,
+                                    honeypot_service: $svc,
+                                    source_vm: $vm,
+                                    processed_timestamp: $ts,
+                                    log_format: "ftp_json",
+                                    ftp_data: {
+                                        event_type: .event_type,
+                                        session_id: .session_id,
+                                        ip: .ip,
+                                        username: .username,
+                                        command: .command
+                                    },
+                                    original_log: .
+                                }')
+                                
+                                if [ $? -eq 0 ] && [ -n "$enhanced_log" ]; then
+                                    send_log "$enhanced_log" "FTP_JSON[$service]"
+                                fi
+                            fi
+                            ;;
+                            
+                        "ftp_text")
+                            # Traitement spécialisé FTP texte
+                            process_ftp_text "$line" "$service" "$current_timestamp"
+                            ;;
+                            
+                        *)
+                            # Fallback pour autres formats
                             clean_message=$(clean_string "$line")
                             fallback_json="{
                                 \"honeypot_type\": \"$honeypot_type\",
                                 \"honeypot_service\": \"$service\",
                                 \"source_vm\": \"192.168.2.117\",
-                                \"log_format\": \"json_fallback\",
-                                \"raw_message\": \"$clean_message\",
-                                \"timestamp\": \"$current_timestamp\",
-                                \"processing_note\": \"Original JSON was malformed\"
+                                \"log_format\": \"unknown\",
+                                \"message\": \"$clean_message\",
+                                \"timestamp\": \"$current_timestamp\"
                             }"
                             
-                            # Compacter le JSON
                             compact_json=$(echo "$fallback_json" | jq -c .)
                             if [ $? -eq 0 ]; then
-                                send_log "$compact_json"
-                            else
-                                echo "$(date '+%Y-%m-%d %H:%M:%S'): FALLBACK_ERROR - Could not create fallback JSON for: $line" >> "$LOG_DIR/failed.log"
+                                send_log "$compact_json" "FALLBACK[$service]"
                             fi
-                        fi
-                    else
-                        # Pour les logs texte, créer un JSON propre
-                        clean_message=$(clean_string "$line")
-                        text_json="{
-                            \"honeypot_type\": \"$honeypot_type\",
-                            \"honeypot_service\": \"$service\",
-                            \"source_vm\": \"192.168.2.117\",
-                            \"log_format\": \"text\",
-                            \"message\": \"$clean_message\",
-                            \"timestamp\": \"$current_timestamp\"
-                        }"
-                        
-                        # Compacter le JSON
-                        compact_json=$(echo "$text_json" | jq -c .)
-                        if [ $? -eq 0 ]; then
-                            send_log "$compact_json"
-                        else
-                            echo "$(date '+%Y-%m-%d %H:%M:%S'): TEXT_JSON_ERROR - Could not create JSON for text log: $line" >> "$LOG_DIR/failed.log"
-                        fi
-                    fi
+                            ;;
+                    esac
                 fi
             done
-        elif [ ! -f "$log_file" ]; then
-            # Log au démarrage seulement
-            if [ ! -f "$LOG_DIR/.missing_logged" ]; then
-                echo "$(date '+%Y-%m-%d %H:%M:%S'): WARNING - Log file missing: $log_file" >> "$LOG_DIR/sender.log"
-                touch "$LOG_DIR/.missing_logged"
-            fi
         fi
     done
     
