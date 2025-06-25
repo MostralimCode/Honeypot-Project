@@ -32,8 +32,8 @@ if ! curl -s "http://192.168.2.124:9200" >/dev/null 2>&1; then
 fi
 
 # Vérifier Logstash installé
-if ! command -v logstash >/dev/null 2>&1; then
-    print_error "Logstash non installé"
+if ! systemctl is-active --quiet logstash; then
+    print_error "Logstash non actif"
     exit 1
 fi
 
