@@ -1,7 +1,7 @@
 #!/bin/bash
-# Script d'envoi automatique des logs honeypot vers Logstash TCP - VERSION ADAPTÉE
+# Script d'envoi spécialisé par fichier - OPTIMISÉ SELON L'ACTIVITÉ RÉELLE
 # VM Honeypot: 192.168.2.117 → VM ELK: 192.168.2.124:5046
-# Traite spécifiquement chaque format de log
+# Traitement adapté à chaque format et fréquence optimisée
 
 LOGSTASH_HOST="192.168.2.124"
 LOGSTASH_PORT="5046"
@@ -11,38 +11,143 @@ POSITION_FILE="$LOG_DIR/positions.txt"
 # Créer le répertoire de logs
 mkdir -p "$LOG_DIR"
 
-# Fonction d'envoi sécurisée
+# Fonction d'envoi avec validation stricte
 send_log() {
     local log_entry="$1"
     local source_info="$2"
+    local log_type="$3"
     
-    # Vérifier que ce n'est pas juste une accolade
-    if [ "$log_entry" = "{" ] || [ "$log_entry" = "}" ] || [ ${#log_entry} -lt 10 ]; then
-        echo "$(date '+%Y-%m-%d %H:%M:%S'): REJECTED - Too short: $log_entry" >> "$LOG_DIR/rejected.log"
+    # Filtrer les lignes vides ou trop courtes
+    if [ -z "$log_entry" ] || [ ${#log_entry} -lt 5 ]; then
         return
     fi
     
-    # Vérifier que c'est du JSON valide avant envoi
+    # Vérifier que c'est du JSON valide
     if echo "$log_entry" | jq . >/dev/null 2>&1; then
+        # JSON valide - envoyer directement
         echo "$log_entry" | nc -w 2 "$LOGSTASH_HOST" "$LOGSTASH_PORT" 2>/dev/null
         if [ $? -eq 0 ]; then
-            echo "$(date '+%Y-%m-%d %H:%M:%S'): SUCCESS - $source_info" >> "$LOG_DIR/sent.log"
+            echo "$(date '+%Y-%m-%d %H:%M:%S'): SUCCESS [$log_type] - $source_info" >> "$LOG_DIR/sent.log"
         else
-            echo "$(date '+%Y-%m-%d %H:%M:%S'): NETWORK_ERROR - $source_info" >> "$LOG_DIR/failed.log"
+            echo "$(date '+%Y-%m-%d %H:%M:%S'): NETWORK_ERROR [$log_type] - $source_info" >> "$LOG_DIR/failed.log"
         fi
     else
-        echo "$(date '+%Y-%m-%d %H:%M:%S'): JSON_ERROR - $source_info - $log_entry" >> "$LOG_DIR/failed.log"
+        # Si pas JSON, créer un JSON approprié selon le type
+        case "$log_type" in
+            "ftp_text")
+                create_ftp_text_json "$log_entry" "$source_info"
+                ;;
+            "cowrie_text")
+                create_cowrie_text_json "$log_entry" "$source_info"
+                ;;
+            *)
+                create_generic_text_json "$log_entry" "$source_info" "$log_type"
+                ;;
+        esac
     fi
 }
 
-# Fonction de nettoyage de chaîne pour JSON
-clean_string() {
-    local input="$1"
-    # Échapper les caractères spéciaux JSON et supprimer les caractères de contrôle
-    echo "$input" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g; s/\r/\\r/g; s/\n/\\n/g' | tr -d '\000-\010\013\014\016-\037'
+# Traitement spécialisé FTP texte
+create_ftp_text_json() {
+    local line="$1"
+    local source="$2"
+    
+    # Parser le format FTP: DATE - LEVEL - ACTION - IP - USER
+    if [[ "$line" =~ ^([0-9-]+\ [0-9:]+)\ -\ ([A-Z]+)\ -\ (.+)\ -\ ([0-9.]+)\ -\ (.+)$ ]]; then
+        local log_date="${BASH_REMATCH[1]}"
+        local log_level="${BASH_REMATCH[2]}"
+        local log_action="${BASH_REMATCH[3]}"
+        local log_ip="${BASH_REMATCH[4]}"
+        local log_user="${BASH_REMATCH[5]}"
+        
+        local json_log=$(jq -n \
+            --arg ts "$(date -Iseconds)" \
+            --arg date "$log_date" \
+            --arg level "$log_level" \
+            --arg action "$log_action" \
+            --arg ip "$log_ip" \
+            --arg user "$log_user" \
+            --arg src "$source" \
+            '{
+                honeypot_type: "ftp",
+                honeypot_service: $src,
+                timestamp: $ts,
+                original_timestamp: $date,
+                level: $level,
+                action: $action,
+                ip: $ip,
+                username: $user,
+                log_format: "ftp_text"
+            }')
+    else
+        # Format non reconnu FTP
+        local json_log=$(jq -n \
+            --arg ts "$(date -Iseconds)" \
+            --arg msg "$line" \
+            --arg src "$source" \
+            '{
+                honeypot_type: "ftp",
+                honeypot_service: $src,
+                timestamp: $ts,
+                message: $msg,
+                log_format: "ftp_text_raw"
+            }')
+    fi
+    
+    echo "$json_log" | nc -w 2 "$LOGSTASH_HOST" "$LOGSTASH_PORT" 2>/dev/null
+    if [ $? -eq 0 ]; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S'): SUCCESS [FTP_TEXT] - $source" >> "$LOG_DIR/sent.log"
+    fi
 }
 
-# Fonction de lecture avec position
+# Traitement spécialisé Cowrie texte
+create_cowrie_text_json() {
+    local line="$1"
+    local source="$2"
+    
+    local json_log=$(jq -n \
+        --arg ts "$(date -Iseconds)" \
+        --arg msg "$line" \
+        --arg src "$source" \
+        '{
+            honeypot_type: "ssh",
+            honeypot_service: "cowrie",
+            timestamp: $ts,
+            message: $msg,
+            log_format: "cowrie_text"
+        }')
+    
+    echo "$json_log" | nc -w 2 "$LOGSTASH_HOST" "$LOGSTASH_PORT" 2>/dev/null
+    if [ $? -eq 0 ]; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S'): SUCCESS [COWRIE_TEXT] - $source" >> "$LOG_DIR/sent.log"
+    fi
+}
+
+# Traitement générique pour autres formats texte
+create_generic_text_json() {
+    local line="$1"
+    local source="$2"
+    local type="$3"
+    
+    local json_log=$(jq -n \
+        --arg ts "$(date -Iseconds)" \
+        --arg msg "$line" \
+        --arg src "$source" \
+        --arg tp "$type" \
+        '{
+            timestamp: $ts,
+            message: $msg,
+            source_type: $src,
+            log_format: $tp
+        }')
+    
+    echo "$json_log" | nc -w 2 "$LOGSTASH_HOST" "$LOGSTASH_PORT" 2>/dev/null
+    if [ $? -eq 0 ]; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S'): SUCCESS [GENERIC] - $source" >> "$LOG_DIR/sent.log"
+    fi
+}
+
+# Fonction de lecture avec position (inchangée)
 read_from_position() {
     local file="$1"
     local position_key="$2"
@@ -51,225 +156,119 @@ read_from_position() {
         return
     fi
     
-    # Récupérer la dernière position
     local last_pos=$(grep "^$position_key:" "$POSITION_FILE" 2>/dev/null | cut -d: -f2)
     if [ -z "$last_pos" ]; then
         last_pos=0
     fi
     
-    # Lire depuis la position
     local current_lines=$(wc -l < "$file" 2>/dev/null || echo "0")
     
     if [ "$current_lines" -gt "$last_pos" ]; then
         tail -n +$((last_pos + 1)) "$file" | head -n $((current_lines - last_pos))
         
-        # Mettre à jour la position
         grep -v "^$position_key:" "$POSITION_FILE" 2>/dev/null > "$POSITION_FILE.tmp" || touch "$POSITION_FILE.tmp"
         echo "$position_key:$current_lines" >> "$POSITION_FILE.tmp"
         mv "$POSITION_FILE.tmp" "$POSITION_FILE"
     fi
 }
 
-# Traitement spécialisé pour les logs FTP texte
-process_ftp_text() {
-    local line="$1"
-    local service="$2"
-    local current_timestamp="$3"
-    
-    # Format FTP: 2025-05-05 16:56:52 - INFO - Auth SUCCESS - 127.0.0.1 - admin
-    if [[ "$line" =~ ^([0-9-]+\ [0-9:]+)\ -\ ([A-Z]+)\ -\ (.+)\ -\ ([0-9.]+)\ -\ (.+)$ ]]; then
-        local log_date="${BASH_REMATCH[1]}"
-        local log_level="${BASH_REMATCH[2]}"
-        local log_action="${BASH_REMATCH[3]}"
-        local log_ip="${BASH_REMATCH[4]}"
-        local log_user="${BASH_REMATCH[5]}"
-        
-        local json_log="{
-            \"honeypot_type\": \"ftp\",
-            \"honeypot_service\": \"$service\",
-            \"source_vm\": \"192.168.2.117\",
-            \"log_format\": \"ftp_text\",
-            \"timestamp\": \"$current_timestamp\",
-            \"original_timestamp\": \"$log_date\",
-            \"level\": \"$log_level\",
-            \"action\": \"$log_action\",
-            \"ip\": \"$log_ip\",
-            \"username\": \"$log_user\",
-            \"message\": \"$(clean_string "$line")\"
-        }"
-        
-        compact_json=$(echo "$json_log" | jq -c .)
-        if [ $? -eq 0 ]; then
-            send_log "$compact_json" "FTP_TEXT[$service]"
-        fi
-    else
-        # Format non reconnu, encapsuler simplement
-        local fallback_json="{
-            \"honeypot_type\": \"ftp\",
-            \"honeypot_service\": \"$service\",
-            \"source_vm\": \"192.168.2.117\",
-            \"log_format\": \"ftp_text_fallback\",
-            \"timestamp\": \"$current_timestamp\",
-            \"message\": \"$(clean_string "$line")\"
-        }"
-        
-        compact_json=$(echo "$fallback_json" | jq -c .)
-        if [ $? -eq 0 ]; then
-            send_log "$compact_json" "FTP_TEXT_FALLBACK[$service]"
-        fi
-    fi
-}
-
-# CONFIGURATION DES SOURCES DE LOGS AVEC TYPES SPÉCIALISÉS
+# CONFIGURATION SPÉCIALISÉE PAR FICHIER
 declare -A LOG_SOURCES=(
-    # Cowrie SSH - JSON spécialisé
-    ["/home/cowrie/cowrie/var/log/cowrie/cowrie.json"]="ssh:cowrie:cowrie_json"
-    ["/home/cowrie/cowrie/var/log/cowrie/cowrie.json.1"]="ssh:cowrie:cowrie_json"
+    # === COWRIE SSH (Faible activité - 79 lignes) ===
+    ["/home/cowrie/cowrie/var/log/cowrie/cowrie.json"]="cowrie_ssh_json:5"
+    ["/home/cowrie/cowrie/var/log/cowrie/cowrie.json.1"]="cowrie_ssh_json:10"
+    ["/home/cowrie/cowrie/var/log/cowrie/cowrie.log"]="cowrie_ssh_text:15"
+    ["/home/cowrie/cowrie/var/log/cowrie/cowrie.log.1"]="cowrie_ssh_text:20"
     
-    # HTTP Honeypot - JSON spécialisé
-    ["/var/log/honeypot/http_honeypot.log"]="http:main:http_json"
-    ["/var/log/honeypot/api_access.log"]="http:api:http_json"
-    ["/var/log/honeypot/sql_injection.log"]="http:sql:http_json"
-    ["/var/log/honeypot/critical_alerts.log"]="http:critical:http_json"
-    ["/var/log/honeypot/sql_error.log"]="http:error:http_json"
+    # === HTTP HONEYPOT (Activité modérée - 145 lignes) ===
+    ["/var/log/honeypot/http_honeypot.log"]="http_main:3"
+    ["/var/log/honeypot/api_access.log"]="http_api:5"
+    ["/var/log/honeypot/sql_injection.log"]="http_sql:2"
+    ["/var/log/honeypot/critical_alerts.log"]="http_critical:2"
+    ["/var/log/honeypot/sql_error.log"]="http_error:5"
     
-    # FTP Honeypot - Mixte JSON et texte
-    ["/root/honeypot-ftp/logs/sessions.json"]="ftp:sessions:ftp_json"
-    ["/root/honeypot-ftp/logs/auth_attempts.log"]="ftp:auth:ftp_text"
-    ["/root/honeypot-ftp/logs/commands.log"]="ftp:commands:ftp_text"
-    ["/root/honeypot-ftp/logs/security_events.log"]="ftp:security:ftp_text"
-    ["/root/honeypot-ftp/logs/transfers.log"]="ftp:transfers:ftp_text"
+    # === FTP HONEYPOT (Haute activité - 300k+ lignes) ===
+    ["/root/honeypot-ftp/logs/sessions.json"]="ftp_sessions:1"
+    ["/root/honeypot-ftp/logs/auth_attempts.log"]="ftp_auth:2"
+    ["/root/honeypot-ftp/logs/commands.log"]="ftp_commands:3"
+    ["/root/honeypot-ftp/logs/security_events.log"]="ftp_security:2"
+    ["/root/honeypot-ftp/logs/transfers.log"]="ftp_transfers:5"
 )
 
 echo "$(date '+%Y-%m-%d %H:%M:%S'): Starting specialized honeypot log sender" >> "$LOG_DIR/sender.log"
 
 # Test de connectivité initial
 if ! nc -z "$LOGSTASH_HOST" "$LOGSTASH_PORT" 2>/dev/null; then
-    echo "$(date '+%Y-%m-%d %H:%M:%S'): ERROR - Cannot connect to Logstash at $LOGSTASH_HOST:$LOGSTASH_PORT" >> "$LOG_DIR/sender.log"
-    sleep 30
+    echo "$(date '+%Y-%m-%d %H:%M:%S'): ERROR - Cannot connect to Logstash" >> "$LOG_DIR/sender.log"
+    sleep 10
 fi
 
-# Boucle principale
+# Variables pour rotation des vérifications
+file_index=0
+total_files=${#LOG_SOURCES[@]}
+
+# Boucle principale optimisée
 while true; do
+    file_processed=0
+    
     for log_file in "${!LOG_SOURCES[@]}"; do
         if [ -f "$log_file" ] && [ -r "$log_file" ]; then
-            IFS=':' read -r honeypot_type service log_format <<< "${LOG_SOURCES[$log_file]}"
+            # Parse source_type et fréquence
+            IFS=':' read -r source_type frequency <<< "${LOG_SOURCES[$log_file]}"
             position_key=$(echo "$log_file" | sed 's/[^a-zA-Z0-9]/_/g')
             
-            # Lire les nouvelles lignes
-            read_from_position "$log_file" "$position_key" | while IFS= read -r line; do
-                if [ -n "$line" ] && [ "$line" != "null" ]; then
-                    current_timestamp=$(date -Iseconds)
-                    
-                    case "$log_format" in
-                        "cowrie_json")
-                            # Traitement spécialisé Cowrie
-                            if echo "$line" | jq . >/dev/null 2>&1; then
-                                enhanced_log=$(echo "$line" | jq --arg ht "$honeypot_type" --arg svc "$service" --arg vm "192.168.2.117" --arg ts "$current_timestamp" '{
-                                    honeypot_type: $ht,
-                                    honeypot_service: $svc,
-                                    source_vm: $vm,
-                                    processed_timestamp: $ts,
-                                    log_format: "cowrie",
-                                    cowrie_data: {
-                                        eventid: .eventid,
-                                        timestamp: .timestamp,
-                                        src_ip: .src_ip,
-                                        session: .session,
-                                        message: .message
-                                    },
-                                    original_log: .
-                                }')
-                                
-                                if [ $? -eq 0 ] && [ -n "$enhanced_log" ]; then
-                                    send_log "$enhanced_log" "COWRIE[$service]"
-                                fi
-                            fi
-                            ;;
-                            
-                        "http_json")
-                            # Traitement spécialisé HTTP
-                            if echo "$line" | jq . >/dev/null 2>&1; then
-                                enhanced_log=$(echo "$line" | jq --arg ht "$honeypot_type" --arg svc "$service" --arg vm "192.168.2.117" --arg ts "$current_timestamp" '{
-                                    honeypot_type: $ht,
-                                    honeypot_service: $svc,
-                                    source_vm: $vm,
-                                    processed_timestamp: $ts,
-                                    log_format: "http",
-                                    http_data: {
-                                        attack_id: .attack_id,
-                                        attack_type: .attack_type,
-                                        severity: .severity,
-                                        ip: .ip,
-                                        method: .method,
-                                        path: .path,
-                                        user_agent: .user_agent
-                                    },
-                                    original_log: .
-                                }')
-                                
-                                if [ $? -eq 0 ] && [ -n "$enhanced_log" ]; then
-                                    send_log "$enhanced_log" "HTTP[$service]"
-                                fi
-                            fi
-                            ;;
-                            
-                        "ftp_json")
-                            # Traitement spécialisé FTP JSON
-                            if echo "$line" | jq . >/dev/null 2>&1; then
-                                enhanced_log=$(echo "$line" | jq --arg ht "$honeypot_type" --arg svc "$service" --arg vm "192.168.2.117" --arg ts "$current_timestamp" '{
-                                    honeypot_type: $ht,
-                                    honeypot_service: $svc,
-                                    source_vm: $vm,
-                                    processed_timestamp: $ts,
-                                    log_format: "ftp_json",
-                                    ftp_data: {
-                                        event_type: .event_type,
-                                        session_id: .session_id,
-                                        ip: .ip,
-                                        username: .username,
-                                        command: .command
-                                    },
-                                    original_log: .
-                                }')
-                                
-                                if [ $? -eq 0 ] && [ -n "$enhanced_log" ]; then
-                                    send_log "$enhanced_log" "FTP_JSON[$service]"
-                                fi
-                            fi
-                            ;;
-                            
-                        "ftp_text")
-                            # Traitement spécialisé FTP texte
-                            process_ftp_text "$line" "$service" "$current_timestamp"
-                            ;;
-                            
-                        *)
-                            # Fallback pour autres formats
-                            clean_message=$(clean_string "$line")
-                            fallback_json="{
-                                \"honeypot_type\": \"$honeypot_type\",
-                                \"honeypot_service\": \"$service\",
-                                \"source_vm\": \"192.168.2.117\",
-                                \"log_format\": \"unknown\",
-                                \"message\": \"$clean_message\",
-                                \"timestamp\": \"$current_timestamp\"
-                            }"
-                            
-                            compact_json=$(echo "$fallback_json" | jq -c .)
-                            if [ $? -eq 0 ]; then
-                                send_log "$compact_json" "FALLBACK[$service]"
-                            fi
-                            ;;
-                    esac
-                fi
-            done
+            # Vérifier seulement certains fichiers à chaque cycle (rotation)
+            if [ $((file_index % frequency)) -eq 0 ]; then
+                # Lire et traiter les nouvelles lignes
+                read_from_position "$log_file" "$position_key" | while IFS= read -r line; do
+                    if [ -n "$line" ] && [ "$line" != "null" ]; then
+                        # Déterminer le type de traitement
+                        case "$source_type" in
+                            cowrie_ssh_json)
+                                send_log "$line" "$source_type" "json"
+                                ;;
+                            cowrie_ssh_text)
+                                send_log "$line" "$source_type" "cowrie_text"
+                                ;;
+                            http_*)
+                                send_log "$line" "$source_type" "json"
+                                ;;
+                            ftp_sessions)
+                                send_log "$line" "$source_type" "json"
+                                ;;
+                            ftp_auth|ftp_commands|ftp_security|ftp_transfers)
+                                send_log "$line" "$source_type" "ftp_text"
+                                ;;
+                            *)
+                                send_log "$line" "$source_type" "generic"
+                                ;;
+                        esac
+                    fi
+                done
+                file_processed=$((file_processed + 1))
+            fi
         fi
     done
     
-    # Nettoyage périodique des logs (garder 7 jours)
-    find "$LOG_DIR" -name "*.log" -mtime +7 -delete 2>/dev/null
+    # Incrémenter l'index pour la rotation
+    file_index=$((file_index + 1))
     
-    # Attendre avant la prochaine vérification
-    sleep 5
+    # Log de monitoring périodique
+    if [ $((file_index % 100)) -eq 0 ]; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S'): Processed cycle $file_index, files checked: $file_processed" >> "$LOG_DIR/sender.log"
+    fi
+    
+    # Nettoyage périodique (chaque 1000 cycles)
+    if [ $((file_index % 1000)) -eq 0 ]; then
+        find "$LOG_DIR" -name "*.log" -mtime +3 -delete 2>/dev/null
+    fi
+    
+    # Attente optimisée selon l'activité
+    if [ $file_processed -gt 5 ]; then
+        sleep 1  # Activité élevée
+    elif [ $file_processed -gt 0 ]; then
+        sleep 2  # Activité modérée
+    else
+        sleep 3  # Activité faible
+    fi
 done
