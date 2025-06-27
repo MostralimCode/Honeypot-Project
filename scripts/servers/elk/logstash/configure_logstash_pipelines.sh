@@ -1,7 +1,7 @@
 #!/bin/bash
-# Script d'installation des pipelines Logstash optimisés pour logs honeypot réels
+# Script d'installation des pipelines Logstash spécialisés pour honeypot
 # VM ELK: 192.168.2.124
-# Traite les vrais logs Cowrie/HTTP/FTP sans transformation complexe
+# Support: Cowrie SSH + HTTP + FTP honeypots
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -19,41 +19,52 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-print_status "=== INSTALLATION PIPELINES OPTIMISÉS POUR LOGS RÉELS ==="
+print_status "=== INSTALLATION PIPELINES LOGSTASH HONEYPOT ==="
 echo ""
 
-# 1. VÉRIFICATIONS
+# 1. VÉRIFICATIONS PRÉALABLES
 print_status "1. Vérifications préalables..."
 
-if ! systemctl is-active --quiet elasticsearch; then
-    print_error "Elasticsearch non actif"
+# Vérifier Elasticsearch
+if ! curl -s "http://192.168.2.124:9200" >/dev/null 2>&1; then
+    print_error "Elasticsearch non accessible"
     exit 1
 fi
 
-print_status "✅ Elasticsearch actif"
+# Vérifier Logstash installé
+if ! systemctl is-active --quiet logstash; then
+    print_error "Logstash non installé"
+    exit 1
+fi
+
+print_status "✅ Prérequis validés"
 
 # 2. ARRÊTER LOGSTASH
 print_status "2. Arrêt de Logstash..."
 systemctl stop logstash
 sleep 5
 
-# 3. SAUVEGARDER
-print_status "3. Sauvegarde des configurations..."
+# 3. SAUVEGARDER LES CONFIGS EXISTANTES
+print_status "3. Sauvegarde des configurations existantes..."
 BACKUP_DATE=$(date +%Y%m%d_%H%M%S)
-BACKUP_DIR="/opt/logstash-backups/optimized.$BACKUP_DATE"
+BACKUP_DIR="/opt/logstash-backups/conf.d.$BACKUP_DATE"
 
 mkdir -p "$BACKUP_DIR"
-if [ -f "/etc/logstash/conf.d/00-honeypot-pipelines.conf" ]; then
-    cp /etc/logstash/conf.d/00-honeypot-pipelines.conf "$BACKUP_DIR/"
-    print_info "Sauvegarde : $BACKUP_DIR"
+if [ -d "/etc/logstash/conf.d" ]; then
+    cp -r /etc/logstash/conf.d/* "$BACKUP_DIR/" 2>/dev/null || true
+    print_info "Sauvegarde créée : $BACKUP_DIR"
 fi
 
-# 4. CRÉER LA CONFIGURATION OPTIMISÉE
-print_status "4. Création des pipelines optimisés..."
+# 4. NETTOYER LES ANCIENNES CONFIGS
+print_status "4. Nettoyage des anciennes configurations..."
+rm -f /etc/logstash/conf.d/*.conf
+
+# 5. CRÉER LA NOUVELLE CONFIGURATION
+print_status "5. Création de la nouvelle configuration..."
 
 cat > /etc/logstash/conf.d/00-honeypot-pipelines.conf << 'EOF'
 # =============================================================================
-# PIPELINES LOGSTASH OPTIMISÉS POUR LOGS HONEYPOT RÉELS
+# PIPELINE INPUT TCP - Port 5046
 # =============================================================================
 
 input {
@@ -65,70 +76,36 @@ input {
   }
 }
 
+# =============================================================================
+# FILTRES SPÉCIALISÉS PAR TYPE DE HONEYPOT
+# =============================================================================
+
 filter {
-  # Ajouter des métadonnées de traitement
+  # Ajouter des métadonnées communes
   mutate {
-    add_field => { "[@metadata][processed_by]" => "logstash_optimized" }
+    add_field => { "[@metadata][processed_by]" => "logstash" }
     add_field => { "[@metadata][processing_timestamp]" => "%{@timestamp}" }
   }
 
   # ==========================================================================
-  # DETECTION AUTOMATIQUE DU TYPE DE HONEYPOT
-  # ==========================================================================
-  
-  # Détecter Cowrie SSH par la présence de champs spécifiques
-  if [eventid] and [src_ip] and [dst_ip] and [session] {
-    mutate {
-      add_field => { "honeypot_type" => "ssh" }
-      add_field => { "honeypot_service" => "cowrie" }
-    }
-  }
-  
-  # Détecter HTTP par la présence de champs spécifiques
-  else if [attack_id] and [attack_type] and [severity] {
-    mutate {
-      add_field => { "honeypot_type" => "http" }
-      add_field => { "honeypot_service" => "web_honeypot" }
-    }
-  }
-  
-  # Détecter FTP par la présence de champs spécifiques
-  else if [event_type] and ([event_type] =~ /ftp/ or [source_type] =~ /ftp/) {
-    mutate {
-      add_field => { "honeypot_type" => "ftp" }
-      add_field => { "honeypot_service" => "ftp_honeypot" }
-    }
-  }
-  
-  # Fallback basé sur source_type
-  else if [source_type] {
-    if [source_type] =~ /cowrie/ {
-      mutate {
-        add_field => { "honeypot_type" => "ssh" }
-        add_field => { "honeypot_service" => "cowrie" }
-      }
-    } else if [source_type] =~ /http/ {
-      mutate {
-        add_field => { "honeypot_type" => "http" }
-        add_field => { "honeypot_service" => "web_honeypot" }
-      }
-    } else if [source_type] =~ /ftp/ {
-      mutate {
-        add_field => { "honeypot_type" => "ftp" }
-        add_field => { "honeypot_service" => "ftp_honeypot" }
-      }
-    }
-  }
-
-  # ==========================================================================
-  # TRAITEMENT COWRIE SSH
+  # PIPELINE COWRIE SSH
   # ==========================================================================
   if [honeypot_type] == "ssh" {
-    # Parser le timestamp Cowrie
-    if [timestamp] {
-      date {
-        match => [ "timestamp", "ISO8601" ]
-        target => "original_timestamp"
+    # Extraire les données Cowrie spécifiques
+    if [cowrie_data] {
+      mutate {
+        add_field => { "eventid" => "%{[cowrie_data][eventid]}" }
+        add_field => { "src_ip" => "%{[cowrie_data][src_ip]}" }
+        add_field => { "session_id" => "%{[cowrie_data][session]}" }
+        add_field => { "event_message" => "%{[cowrie_data][message]}" }
+      }
+      
+      # Parser le timestamp Cowrie
+      if [cowrie_data][timestamp] {
+        date {
+          match => [ "[cowrie_data][timestamp]", "ISO8601" ]
+          target => "original_timestamp"
+        }
       }
     }
     
@@ -176,8 +153,8 @@ filter {
     }
     
     # Détection de commandes suspectes
-    if [message] {
-      if [message] =~ /(?i)(wget|curl|nc|netcat|nmap)/ {
+    if [event_message] {
+      if [event_message] =~ /(?i)(wget|curl|nc|netcat|nmap)/ {
         mutate { 
           add_field => { "suspicious_command" => "true" }
           add_field => { "command_type" => "network_tool" }
@@ -185,7 +162,7 @@ filter {
         }
       }
       
-      if [message] =~ /(?i)(rm -rf|dd if=|mkfs|fdisk)/ {
+      if [event_message] =~ /(?i)(rm -rf|dd if=|mkfs|fdisk)/ {
         mutate { 
           add_field => { "suspicious_command" => "true" }
           add_field => { "command_type" => "destructive" }
@@ -196,20 +173,30 @@ filter {
   }
 
   # ==========================================================================
-  # TRAITEMENT HTTP HONEYPOT
+  # PIPELINE HTTP HONEYPOT
   # ==========================================================================
   else if [honeypot_type] == "http" {
+    # Extraire les données HTTP spécifiques
+    if [http_data] {
+      mutate {
+        add_field => { "attack_id" => "%{[http_data][attack_id]}" }
+        add_field => { "attack_type" => "%{[http_data][attack_type]}" }
+        add_field => { "severity" => "%{[http_data][severity]}" }
+        add_field => { "client_ip" => "%{[http_data][ip]}" }
+        add_field => { "http_method" => "%{[http_data][method]}" }
+        add_field => { "http_path" => "%{[http_data][path]}" }
+        add_field => { "user_agent" => "%{[http_data][user_agent]}" }
+      }
+    }
+    
     # Enrichissement GeoIP pour HTTP
-    if [ip] and [ip] != "127.0.0.1" {
+    if [client_ip] and [client_ip] != "127.0.0.1" {
       geoip {
-        source => "ip"
+        source => "client_ip"
         target => "geoip"
         add_field => { "src_country" => "%{[geoip][country_name]}" }
         add_field => { "src_city" => "%{[geoip][city_name]}" }
       }
-      
-      # Alias pour standardisation
-      mutate { add_field => { "client_ip" => "%{ip}" } }
     }
     
     # Classification des attaques HTTP
@@ -238,7 +225,7 @@ filter {
       }
     }
     
-    # Mapping de sévérité HTTP
+    # Mapping de sévérité
     if [severity] {
       if [severity] == "critical" {
         mutate { add_field => { "alert_score" => "10" } }
@@ -268,34 +255,53 @@ filter {
   }
 
   # ==========================================================================
-  # TRAITEMENT FTP HONEYPOT
+  # PIPELINE FTP HONEYPOT
   # ==========================================================================
   else if [honeypot_type] == "ftp" {
-    # Pour les logs FTP JSON
-    if [event_type] and [ip] {
-      mutate { add_field => { "client_ip" => "%{ip}" } }
+    if [log_format] == "ftp_json" and [ftp_data] {
+      # FTP JSON - Sessions complètes
+      mutate {
+        add_field => { "event_type" => "%{[ftp_data][event_type]}" }
+        add_field => { "session_id" => "%{[ftp_data][session_id]}" }
+        add_field => { "client_ip" => "%{[ftp_data][ip]}" }
+        add_field => { "username" => "%{[ftp_data][username]}" }
+        add_field => { "ftp_command" => "%{[ftp_data][command]}" }
+      }
       
       mutate { 
         add_field => { "event_category" => "ftp_session" }
         add_field => { "severity_level" => "medium" }
         add_field => { "alert_score" => "5" }
       }
-    }
-    
-    # Pour les logs FTP texte (basé sur message)
-    if [message] and [message] =~ /Auth|LOGIN|PASS/ {
-      if [message] =~ /SUCCESS/ {
-        mutate { 
-          add_field => { "event_category" => "ftp_success" }
-          add_field => { "severity_level" => "low" }
-          add_field => { "alert_score" => "3" }
+      
+    } else if [log_format] == "ftp_text" {
+      # FTP Texte - Logs parsés
+      if [action] {
+        if [action] =~ /(?i)success/ {
+          mutate { 
+            add_field => { "event_category" => "ftp_success" }
+            add_field => { "severity_level" => "low" }
+            add_field => { "alert_score" => "3" }
+          }
+        } else if [action] =~ /(?i)fail/ {
+          mutate { 
+            add_field => { "event_category" => "ftp_failure" }
+            add_field => { "severity_level" => "medium" }
+            add_field => { "alert_score" => "5" }
+          }
+        } else if [action] =~ /(?i)(brute|force|attempt)/ {
+          mutate { 
+            add_field => { "event_category" => "ftp_bruteforce" }
+            add_field => { "severity_level" => "high" }
+            add_field => { "alert_score" => "8" }
+            add_field => { "mitre_tactic" => "credential_access" }
+          }
         }
-      } else if [message] =~ /FAIL/ {
-        mutate { 
-          add_field => { "event_category" => "ftp_failure" }
-          add_field => { "severity_level" => "medium" }
-          add_field => { "alert_score" => "5" }
-        }
+      }
+      
+      # Alias pour IP client
+      if [ip] {
+        mutate { add_field => { "client_ip" => "%{ip}" } }
       }
     }
     
@@ -314,7 +320,7 @@ filter {
   # ENRICHISSEMENTS COMMUNS
   # ==========================================================================
   
-  # Score de risque global
+  # Ajouter un score de risque global
   if [alert_score] {
     if [alert_score] >= "8" {
       mutate { add_field => { "risk_level" => "critical" } }
@@ -327,7 +333,7 @@ filter {
     }
   }
   
-  # Standardiser les champs IP pour tous les types
+  # Standardiser les champs IP
   if [src_ip] and ![client_ip] {
     mutate { add_field => { "client_ip" => "%{src_ip}" } }
   }
@@ -339,35 +345,38 @@ filter {
 }
 
 # =============================================================================
-# OUTPUTS SPÉCIALISÉS PAR TYPE - INDICES SÉPARÉS
+# OUTPUTS SPÉCIALISÉS PAR TYPE
 # =============================================================================
 
 output {
-  # SSH Cowrie → honeypot-cowrie-*
+  # Output pour SSH Cowrie
   if [honeypot_type] == "ssh" {
     elasticsearch {
       hosts => ["192.168.2.124:9200"]
       index => "honeypot-cowrie-%{+YYYY.MM.dd}"
+      template_name => "honeypot-cowrie"
     }
   }
   
-  # HTTP → honeypot-http-*
+  # Output pour HTTP
   else if [honeypot_type] == "http" {
     elasticsearch {
       hosts => ["192.168.2.124:9200"]
       index => "honeypot-http-%{+YYYY.MM.dd}"
+      template_name => "honeypot-http"
     }
   }
   
-  # FTP → honeypot-ftp-*
+  # Output pour FTP
   else if [honeypot_type] == "ftp" {
     elasticsearch {
       hosts => ["192.168.2.124:9200"]
       index => "honeypot-ftp-%{+YYYY.MM.dd}"
+      template_name => "honeypot-ftp"
     }
   }
   
-  # Fallback pour types non identifiés
+  # Fallback pour autres types
   else {
     elasticsearch {
       hosts => ["192.168.2.124:9200"]
@@ -377,33 +386,43 @@ output {
 }
 EOF
 
-print_status "✅ Configuration optimisée créée"
+print_status "✅ Configuration créée"
 
-# 5. PERMISSIONS
-print_status "5. Configuration des permissions..."
+# 6. PERMISSIONS
+print_status "6. Configuration des permissions..."
 chown logstash:logstash /etc/logstash/conf.d/00-honeypot-pipelines.conf
 chmod 644 /etc/logstash/conf.d/00-honeypot-pipelines.conf
 
-# 6. TEST SYNTAXE
-print_status "6. Test de syntaxe..."
+# 7. TEST DE SYNTAXE
+print_status "7. Test de syntaxe..."
 if sudo -u logstash /usr/share/logstash/bin/logstash --path.settings /etc/logstash -t; then
     print_status "✅ Syntaxe validée"
 else
     print_error "❌ Erreur de syntaxe"
-    print_error "Restauration..."
-    if [ -f "$BACKUP_DIR/00-honeypot-pipelines.conf" ]; then
-        cp "$BACKUP_DIR/00-honeypot-pipelines.conf" /etc/logstash/conf.d/
-    fi
+    print_error "Restauration de l'ancienne configuration..."
+    rm -f /etc/logstash/conf.d/*.conf
+    cp "$BACKUP_DIR"/* /etc/logstash/conf.d/ 2>/dev/null || true
     exit 1
 fi
 
-# 7. REDÉMARRER LOGSTASH
-print_status "7. Redémarrage de Logstash..."
+# 8. CONFIGURER ELASTICSEARCH POUR AUTO-CREATE INDEX
+print_status "8. Configuration Elasticsearch..."
+curl -X PUT "http://192.168.2.124:9200/_cluster/settings" -H "Content-Type: application/json" -d '{
+  "persistent": {
+    "action.auto_create_index": "honeypot-*,logstash-*,filebeat-*,.monitoring-*"
+  }
+}' >/dev/null 2>&1
+
+print_status "✅ Elasticsearch configuré"
+
+# 9. REDÉMARRER LOGSTASH
+print_status "9. Redémarrage de Logstash..."
 systemctl start logstash
 
-print_info "Attente du démarrage (45s)..."
+# Attendre le démarrage
+print_info "Attente du démarrage (60s max)..."
 counter=0
-while [ $counter -lt 45 ]; do
+while [ $counter -lt 60 ]; do
     if systemctl is-active --quiet logstash; then
         print_status "✅ Logstash démarré"
         break
@@ -415,9 +434,10 @@ while [ $counter -lt 45 ]; do
     counter=$((counter + 2))
 done
 
-# 8. VÉRIFICATIONS
-print_status "8. Vérifications..."
+# 10. VÉRIFICATIONS POST-DÉMARRAGE
+print_status "10. Vérifications post-démarrage..."
 
+# Service actif
 if systemctl is-active --quiet logstash; then
     print_status "✅ Service actif"
 else
@@ -426,102 +446,119 @@ else
     exit 1
 fi
 
+# Port en écoute
 sleep 10
-
 if netstat -tlnp | grep -q ":5046"; then
-    print_status "✅ Port 5046 ouvert"
+    print_status "✅ Port 5046 en écoute"
+    PORT_INFO=$(netstat -tlnp | grep ":5046")
+    print_info "   $PORT_INFO"
 else
     print_warning "⚠️ Port 5046 pas encore ouvert"
 fi
 
+# API Logstash
 if curl -s "http://192.168.2.124:9600/" >/dev/null 2>&1; then
     print_status "✅ API Logstash accessible"
 else
     print_warning "⚠️ API pas encore prête"
 fi
 
-# 9. CRÉER SCRIPTS DE TEST
-print_status "9. Création des scripts de test..."
+# 11. CRÉER UN SCRIPT DE TEST
+print_status "11. Création du script de test..."
 
-cat > /opt/test_optimized_pipelines.sh << 'TEST_EOF'
+cat > /opt/test_honeypot_pipelines.sh << 'TEST_EOF'
 #!/bin/bash
-echo "=== TEST PIPELINES OPTIMISÉS ==="
+echo "=== TEST PIPELINES HONEYPOT ==="
 echo ""
-echo "📊 Status:"
-echo "   Logstash: $(systemctl is-active logstash)"
-echo "   Port 5046: $(netstat -tlnp | grep -q ':5046' && echo 'OUVERT' || echo 'FERMÉ')"
+echo "📊 Status Logstash:"
+echo "   Service: $(systemctl is-active logstash)"
 echo ""
-echo "🔗 Test envoi:"
-echo '{"eventid": "cowrie.login.failed", "src_ip": "203.0.113.5", "dst_ip": "192.168.2.117", "session": "test123", "message": "SSH login test"}' | nc localhost 5046 2>/dev/null && echo "   ✅ Envoi SSH réussi" || echo "   ❌ Envoi SSH échoué"
+echo "🔗 Ports:"
+netstat -tlnp | grep -E "5046|9200|9600"
+echo ""
+echo "📈 API Logstash:"
+curl -s "http://192.168.2.124:9600/" | jq .status 2>/dev/null || echo "   API non accessible"
+echo ""
+echo "📁 Indices honeypot:"
+curl -s "http://192.168.2.124:9200/_cat/indices/honeypot-*?v" 2>/dev/null || echo "   Pas encore d'indices"
+echo ""
+echo "🔢 Test de comptage:"
+curl -s "http://192.168.2.124:9200/honeypot-*/_count?pretty" 2>/dev/null | grep count || echo "   Pas de données"
+echo ""
+echo "🔍 Derniers logs Logstash:"
+journalctl -u logstash --no-pager -n 3 | tail -3
+echo ""
+echo "🧪 Test d'envoi manuel:"
+echo '{"honeypot_type": "test", "message": "Pipeline test", "timestamp": "'$(date -Iseconds)'"}' | nc localhost 5046 2>/dev/null && echo "   ✅ Envoi réussi" || echo "   ❌ Envoi échoué"
+TEST_EOF
 
-echo '{"attack_id": "test123", "attack_type": "sql_injection", "severity": "high", "ip": "203.0.113.10", "method": "POST", "path": "/login"}' | nc localhost 5046 2>/dev/null && echo "   ✅ Envoi HTTP réussi" || echo "   ❌ Envoi HTTP échoué"
+chmod +x /opt/test_honeypot_pipelines.sh
+
+# 12. CRÉER UN SCRIPT DE MONITORING
+cat > /opt/monitor_honeypot_pipelines.sh << 'MONITOR_EOF'
+#!/bin/bash
+echo "=== MONITORING PIPELINES HONEYPOT ==="
 echo ""
-echo "📊 Indices créés:"
-curl -s "http://192.168.2.124:9200/_cat/indices/honeypot-*?v&s=index" 2>/dev/null || echo "   Aucun indice"
+
+# Statistiques Elasticsearch
+echo "📊 INDICES HONEYPOT:"
+curl -s "http://192.168.2.124:9200/_cat/indices/honeypot-*?v&s=index" 2>/dev/null || echo "Aucun indice trouvé"
 echo ""
-echo "🔢 Comptage par type:"
-for type in cowrie http ftp misc; do
+
+# Comptage par type
+echo "🔢 COMPTAGE PAR TYPE:"
+for type in cowrie http ftp; do
     count=$(curl -s "http://192.168.2.124:9200/honeypot-$type-*/_count" 2>/dev/null | jq -r '.count // 0')
     echo "   $type: $count documents"
 done
-TEST_EOF
-
-chmod +x /opt/test_optimized_pipelines.sh
-
-cat > /opt/monitor_pipeline_activity.sh << 'MONITOR_EOF'
-#!/bin/bash
-echo "=== MONITORING ACTIVITÉ PIPELINES ==="
 echo ""
-echo "📊 Répartition par type:"
-curl -s "http://192.168.2.124:9200/honeypot-*/_search?size=0" -H "Content-Type: application/json" -d '{
-  "aggs": {
-    "by_type": {
-      "terms": {
-        "field": "honeypot_type.keyword",
-        "size": 10
-      }
-    }
-  }
-}' 2>/dev/null | jq -r '.aggregations.by_type.buckets[] | "\(.key): \(.doc_count)"' 2>/dev/null || echo "Erreur requête"
 
+# Dernières données reçues
+echo "🕐 DERNIÈRES DONNÉES:"
+curl -s "http://192.168.2.124:9200/honeypot-*/_search?sort=@timestamp:desc&size=3&_source=honeypot_type,@timestamp,client_ip" 2>/dev/null | jq -r '.hits.hits[]._source | "\(.@timestamp) - \(.honeypot_type) - \(.client_ip // "N/A")"' 2>/dev/null || echo "Aucune donnée récente"
 echo ""
-echo "🕐 Dernières données par type:"
-for type in ssh http ftp; do
-    latest=$(curl -s "http://192.168.2.124:9200/honeypot-*/_search?q=honeypot_type:$type&size=1&sort=@timestamp:desc&_source=@timestamp,eventid,attack_type,event_type" 2>/dev/null | jq -r '.hits.hits[0]._source | "\(.["@timestamp"]) - \(.eventid // .attack_type // .event_type // "N/A")"' 2>/dev/null)
-    echo "   $type: $latest"
-done
+
+# Status pipeline
+echo "📈 STATUS PIPELINE:"
+curl -s "http://192.168.2.124:9600/_node/stats/pipelines" 2>/dev/null | jq -r '.pipelines.main.events | "Events: in=\(.in), out=\(.out), filtered=\(.filtered)"' 2>/dev/null || echo "Stats non disponibles"
 MONITOR_EOF
 
-chmod +x /opt/monitor_pipeline_activity.sh
+chmod +x /opt/monitor_honeypot_pipelines.sh
 
-# 10. RÉSUMÉ FINAL
+# 13. RÉSUMÉ FINAL
 echo ""
 print_status "=== INSTALLATION TERMINÉE ==="
 echo ""
-print_info "📊 PIPELINES OPTIMISÉS:"
-echo "✅ Détection automatique par champs natifs"
-echo "✅ SSH Cowrie: eventid, src_ip, session → honeypot-cowrie-*"
-echo "✅ HTTP: attack_id, attack_type, severity → honeypot-http-*"
-echo "✅ FTP: event_type, source_type → honeypot-ftp-*"
+print_info "📊 RÉSUMÉ:"
+echo "✅ Ancienne config sauvegardée: $BACKUP_DIR"
+echo "✅ Nouvelle configuration installée"
+echo "✅ Tests de validation réussis"
+echo "✅ Service Logstash redémarré"
+echo "✅ Scripts de test créés"
 echo ""
-print_info "📁 ENRICHISSEMENTS:"
-echo "✅ GeoIP sur tous les types"
-echo "✅ Classification MITRE ATT&CK"
-echo "✅ Scores d'alerte et niveaux de risque"
-echo "✅ Détection de commandes suspectes"
+print_info "📁 PIPELINES CONFIGURÉS:"
+echo "   • SSH Cowrie: Analyse eventid, GeoIP, MITRE ATT&CK"
+echo "   • HTTP: Classification attaques, OWASP, User-Agent"
+echo "   • FTP: Sessions JSON + logs texte parsés"
+echo ""
+print_info "📊 INDICES ELASTICSEARCH:"
+echo "   • honeypot-cowrie-YYYY.MM.dd"
+echo "   • honeypot-http-YYYY.MM.dd"
+echo "   • honeypot-ftp-YYYY.MM.dd"
 echo ""
 print_warning "🎯 PROCHAINES ÉTAPES:"
-echo "1. Tester: /opt/test_optimized_pipelines.sh"
-echo "2. Installer script sender optimisé"
-echo "3. Monitoring: /opt/monitor_pipeline_activity.sh"
-echo "4. Redémarrer honeypot-sender"
+echo "1. Tester: /opt/test_honeypot_pipelines.sh"
+echo "2. Monitoring: /opt/monitor_honeypot_pipelines.sh"
+echo "3. Redémarrer le sender: systemctl restart honeypot-sender"
+echo "4. Surveiller: journalctl -u logstash -f"
 echo ""
-print_status "Pipelines optimisés installés avec succès !"
+print_status "Pipelines Logstash honeypot installés avec succès !"
 echo ""
 print_info "🔍 COMMANDES UTILES:"
-echo "   • Test: /opt/test_optimized_pipelines.sh"
-echo "   • Monitoring: /opt/monitor_pipeline_activity.sh"
-echo "   • Logs: journalctl -u logstash -f"
+echo "   • Test pipelines: /opt/test_honeypot_pipelines.sh"
+echo "   • Monitoring: /opt/monitor_honeypot_pipelines.sh"
+echo "   • Logs Logstash: journalctl -u logstash -f"
+echo "   • API Logstash: curl http://192.168.2.124:9600/"
 
 echo ""
-echo "$(date): Pipelines optimisés installés" >> /var/log/elk-optimized-install.log
+echo "$(date): Pipelines Logstash honeypot installés" >> /var/log/elk-honeypot-install.log
