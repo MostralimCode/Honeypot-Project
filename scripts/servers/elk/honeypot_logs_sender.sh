@@ -16,6 +16,12 @@ send_log() {
     local log_entry="$1"
     local source_info="$2"
     
+    # Vérifier que ce n'est pas juste une accolade
+    if [ "$log_entry" = "{" ] || [ "$log_entry" = "}" ] || [ ${#log_entry} -lt 10 ]; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S'): REJECTED - Too short: $log_entry" >> "$LOG_DIR/rejected.log"
+        return
+    fi
+    
     # Vérifier que c'est du JSON valide avant envoi
     if echo "$log_entry" | jq . >/dev/null 2>&1; then
         echo "$log_entry" | nc -w 2 "$LOGSTASH_HOST" "$LOGSTASH_PORT" 2>/dev/null
