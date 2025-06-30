@@ -2,7 +2,6 @@
 # Script d'installation des pipelines Logstash spécialisés pour honeypot
 # VM ELK: 192.168.2.124
 # Support: Cowrie SSH + HTTP + FTP honeypots
-# CORRIGÉ pour formats de logs réels
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -34,7 +33,7 @@ fi
 
 # Vérifier Logstash installé
 if ! systemctl is-active --quiet logstash; then
-    print_error "Logstash non installé ou arrêté"
+    print_error "Logstash non installé"
     exit 1
 fi
 
@@ -60,7 +59,7 @@ fi
 print_status "4. Nettoyage des anciennes configurations..."
 rm -f /etc/logstash/conf.d/*.conf
 
-# 5. CRÉER LA NOUVELLE CONFIGURATION CORRIGÉE
+# 5. CRÉER LA NOUVELLE CONFIGURATION
 print_status "5. Création de la nouvelle configuration..."
 
 cat > /etc/logstash/conf.d/00-honeypot-pipelines.conf << 'EOF'
@@ -78,7 +77,7 @@ input {
 }
 
 # =============================================================================
-# FILTRES SPÉCIALISÉS PAR TYPE DE HONEYPOT - VERSION CORRIGÉE
+# FILTRES SPÉCIALISÉS PAR TYPE DE HONEYPOT
 # =============================================================================
 
 filter {
@@ -89,20 +88,29 @@ filter {
   }
 
   # ==========================================================================
-  # PIPELINE COWRIE SSH - CORRIGÉ POUR DONNÉES DIRECTES
+  # PIPELINE COWRIE SSH
   # ==========================================================================
   if [honeypot_type] == "ssh" {
-    
-    # Parse du timestamp Cowrie (format: 2025-06-27T13:47:54.424222Z)
-    if [timestamp] {
-      date {
-        match => [ "timestamp", "ISO8601" ]
-        target => "cowrie_timestamp"
+    # Extraire les données Cowrie spécifiques
+    if [cowrie_data] {
+      mutate {
+        add_field => { "eventid" => "%{[cowrie_data][eventid]}" }
+        add_field => { "src_ip" => "%{[cowrie_data][src_ip]}" }
+        add_field => { "session_id" => "%{[cowrie_data][session]}" }
+        add_field => { "event_message" => "%{[cowrie_data][message]}" }
+      }
+      
+      # Parser le timestamp Cowrie
+      if [cowrie_data][timestamp] {
+        date {
+          match => [ "[cowrie_data][timestamp]", "ISO8601" ]
+          target => "original_timestamp"
+        }
       }
     }
     
-    # Enrichissement GeoIP sur src_ip (données directes maintenant)
-    if [src_ip] and [src_ip] != "127.0.0.1" and [src_ip] != "192.168.2.117" {
+    # Enrichissement GeoIP
+    if [src_ip] and [src_ip] != "127.0.0.1" {
       geoip {
         source => "src_ip"
         target => "geoip"
@@ -111,7 +119,7 @@ filter {
       }
     }
     
-    # Classification basée sur eventid (direct maintenant, pas cowrie_data)
+    # Classification des événements SSH
     if [eventid] {
       if [eventid] == "cowrie.login.success" {
         mutate { 
@@ -139,115 +147,85 @@ filter {
           add_field => { "event_category" => "connection" }
           add_field => { "severity_level" => "low" }
           add_field => { "alert_score" => "3" }
-        }
-      } else if [eventid] == "cowrie.session.closed" {
-        mutate { 
-          add_field => { "event_category" => "disconnection" }
-          add_field => { "severity_level" => "low" }
-          add_field => { "alert_score" => "1" }
-        }
-      } else if [eventid] == "cowrie.client.version" {
-        mutate { 
-          add_field => { "event_category" => "reconnaissance" }
-          add_field => { "severity_level" => "low" }
-          add_field => { "alert_score" => "2" }
+          add_field => { "mitre_tactic" => "initial_access" }
         }
       }
     }
     
-    # Analyser les commandes suspectes dans le message
-    if [message] {
-      if [message] =~ /(?i)(wget|curl).*http/ {
-        mutate { 
-          add_field => { "suspicious_command" => "true" }
-          add_field => { "command_type" => "download_tool" }
-        }
-      }
-      
-      if [message] =~ /(?i)(nc|netcat|nmap)/ {
+    # Détection de commandes suspectes
+    if [event_message] {
+      if [event_message] =~ /(?i)(wget|curl|nc|netcat|nmap)/ {
         mutate { 
           add_field => { "suspicious_command" => "true" }
           add_field => { "command_type" => "network_tool" }
+          add_field => { "alert_score" => "9" }
         }
       }
       
-      if [message] =~ /(?i)(rm -rf|dd if=|mkfs|fdisk)/ {
+      if [event_message] =~ /(?i)(rm -rf|dd if=|mkfs|fdisk)/ {
         mutate { 
           add_field => { "suspicious_command" => "true" }
           add_field => { "command_type" => "destructive" }
+          add_field => { "alert_score" => "10" }
         }
       }
-    }
-    
-    # Métadonnées
-    mutate {
-      add_field => { "service_type" => "ssh_honeypot" }
-      add_field => { "infrastructure" => "honeypot" }
     }
   }
 
   # ==========================================================================
-  # PIPELINE HTTP HONEYPOT - CORRIGÉ POUR VOS DONNÉES RÉELLES
+  # PIPELINE HTTP HONEYPOT
   # ==========================================================================
   else if [honeypot_type] == "http" {
-    
-    # Parse du timestamp HTTP (format: 2025-05-07T16:28:49.324)
-    if [timestamp] {
-      date {
-        match => [ "timestamp", "yyyy-MM-dd'T'HH:mm:ss.SSS" ]
-        target => "http_timestamp"
+    # Extraire les données HTTP spécifiques
+    if [http_data] {
+      mutate {
+        add_field => { "attack_id" => "%{[http_data][attack_id]}" }
+        add_field => { "attack_type" => "%{[http_data][attack_type]}" }
+        add_field => { "severity" => "%{[http_data][severity]}" }
+        add_field => { "client_ip" => "%{[http_data][ip]}" }
+        add_field => { "http_method" => "%{[http_data][method]}" }
+        add_field => { "http_path" => "%{[http_data][path]}" }
+        add_field => { "user_agent" => "%{[http_data][user_agent]}" }
       }
     }
     
-    # Enrichissement GeoIP sur le champ ip
-    if [ip] and [ip] != "127.0.0.1" and [ip] != "192.168.2.117" {
+    # Enrichissement GeoIP pour HTTP
+    if [client_ip] and [client_ip] != "127.0.0.1" {
       geoip {
-        source => "ip"
+        source => "client_ip"
         target => "geoip"
         add_field => { "src_country" => "%{[geoip][country_name]}" }
         add_field => { "src_city" => "%{[geoip][city_name]}" }
       }
     }
     
-    # Classification basée sur attack_type de vos logs
+    # Classification des attaques HTTP
     if [attack_type] {
       if [attack_type] == "sql_injection" {
         mutate { 
           add_field => { "event_category" => "web_attack" }
-          add_field => { "attack_category" => "injection" }
+          add_field => { "severity_level" => "critical" }
+          add_field => { "alert_score" => "9" }
+          add_field => { "mitre_tactic" => "initial_access" }
           add_field => { "owasp_category" => "A03_injection" }
+        }
+      } else if [attack_type] == "api_access" {
+        mutate { 
+          add_field => { "event_category" => "api_abuse" }
+          add_field => { "severity_level" => "medium" }
+          add_field => { "alert_score" => "5" }
+          add_field => { "mitre_tactic" => "discovery" }
         }
       } else if [attack_type] == "sql_error" {
         mutate { 
           add_field => { "event_category" => "web_error" }
-          add_field => { "attack_category" => "information_disclosure" }
-        }
-      } else if [attack_type] == "api_access" {
-        mutate { 
-          add_field => { "event_category" => "api_access" }
-          add_field => { "attack_category" => "reconnaissance" }
+          add_field => { "severity_level" => "low" }
+          add_field => { "alert_score" => "3" }
         }
       }
     }
     
-    # Analyser les query_string
-    if [query_string] {
-      if [query_string] =~ /(?i)(union|select|insert|delete|drop)/ {
-        mutate { 
-          add_field => { "suspicious_query" => "true" }
-          add_field => { "attack_vector" => "sql_injection" }
-        }
-      }
-      
-      if [query_string] =~ /(?i)(<script|javascript|onerror)/ {
-        mutate { 
-          add_field => { "suspicious_query" => "true" }
-          add_field => { "attack_vector" => "xss" }
-        }
-      }
-    }
-    
-    # Classification severity de vos logs
+    # Mapping de sévérité
     if [severity] {
       if [severity] == "critical" {
         mutate { add_field => { "alert_score" => "10" } }
@@ -260,85 +238,109 @@ filter {
       }
     }
     
-    mutate {
-      add_field => { "service_type" => "http_honeypot" }
-      add_field => { "infrastructure" => "honeypot" }
+    # Analyse User-Agent
+    if [user_agent] {
+      if [user_agent] =~ /(?i)(bot|crawler|spider|scanner)/ {
+        mutate { 
+          add_field => { "client_type" => "automated" }
+          add_field => { "alert_score" => "6" }
+        }
+      } else if [user_agent] =~ /(?i)(curl|wget|python)/ {
+        mutate { 
+          add_field => { "client_type" => "script" }
+          add_field => { "alert_score" => "7" }
+        }
+      }
     }
   }
 
   # ==========================================================================
-  # PIPELINE FTP HONEYPOT - GARDE LA LOGIQUE QUI FONCTIONNE
+  # PIPELINE FTP HONEYPOT
   # ==========================================================================
   else if [honeypot_type] == "ftp" {
-    
-    if [timestamp] {
-      date {
-        match => [ "timestamp", "ISO8601" ]
-        target => "ftp_timestamp"
+    if [log_format] == "ftp_json" and [ftp_data] {
+      # FTP JSON - Sessions complètes
+      mutate {
+        add_field => { "event_type" => "%{[ftp_data][event_type]}" }
+        add_field => { "session_id" => "%{[ftp_data][session_id]}" }
+        add_field => { "client_ip" => "%{[ftp_data][ip]}" }
+        add_field => { "username" => "%{[ftp_data][username]}" }
+        add_field => { "ftp_command" => "%{[ftp_data][command]}" }
+      }
+      
+      mutate { 
+        add_field => { "event_category" => "ftp_session" }
+        add_field => { "severity_level" => "medium" }
+        add_field => { "alert_score" => "5" }
+      }
+      
+    } else if [log_format] == "ftp_text" {
+      # FTP Texte - Logs parsés
+      if [action] {
+        if [action] =~ /(?i)success/ {
+          mutate { 
+            add_field => { "event_category" => "ftp_success" }
+            add_field => { "severity_level" => "low" }
+            add_field => { "alert_score" => "3" }
+          }
+        } else if [action] =~ /(?i)fail/ {
+          mutate { 
+            add_field => { "event_category" => "ftp_failure" }
+            add_field => { "severity_level" => "medium" }
+            add_field => { "alert_score" => "5" }
+          }
+        } else if [action] =~ /(?i)(brute|force|attempt)/ {
+          mutate { 
+            add_field => { "event_category" => "ftp_bruteforce" }
+            add_field => { "severity_level" => "high" }
+            add_field => { "alert_score" => "8" }
+            add_field => { "mitre_tactic" => "credential_access" }
+          }
+        }
+      }
+      
+      # Alias pour IP client
+      if [ip] {
+        mutate { add_field => { "client_ip" => "%{ip}" } }
       }
     }
     
-    if [ip] and [ip] != "127.0.0.1" and [ip] != "192.168.2.117" {
+    # Enrichissement GeoIP pour FTP
+    if [client_ip] and [client_ip] != "127.0.0.1" {
       geoip {
-        source => "ip"
+        source => "client_ip"
         target => "geoip"
         add_field => { "src_country" => "%{[geoip][country_name]}" }
         add_field => { "src_city" => "%{[geoip][city_name]}" }
       }
     }
-    
-    if [event_type] {
-      if [event_type] == "auth_attempt" {
-        if [success] == true {
-          mutate { 
-            add_field => { "event_category" => "authentication_success" }
-            add_field => { "severity_level" => "critical" }
-            add_field => { "alert_score" => "10" }
-          }
-        } else {
-          mutate { 
-            add_field => { "event_category" => "authentication_failure" }
-            add_field => { "severity_level" => "medium" }
-            add_field => { "alert_score" => "5" }
-          }
-        }
-      } else if [event_type] == "file_upload" {
-        mutate { 
-          add_field => { "event_category" => "file_transfer" }
-          add_field => { "severity_level" => "high" }
-          add_field => { "alert_score" => "8" }
-        }
-      }
-    }
-    
-    if [filename] {
-      if [filename] =~ /(?i)(\.php|\.asp|\.exe|backdoor|shell)/ {
-        mutate {
-          add_field => { "suspicious_file" => "true" }
-          add_field => { "malicious_file" => "true" }
-        }
-      }
-    }
-    
-    mutate {
-      add_field => { "service_type" => "ftp_honeypot" }
-      add_field => { "infrastructure" => "honeypot" }
-    }
   }
 
-  # Normalisation finale
-  if [honeypot_type] {
-    # IP unifiée
-    if [src_ip] and ![client_ip] {
-      mutate { add_field => { "client_ip" => "%{src_ip}" } }
-    } else if [ip] and ![client_ip] {
-      mutate { add_field => { "client_ip" => "%{ip}" } }
+  # ==========================================================================
+  # ENRICHISSEMENTS COMMUNS
+  # ==========================================================================
+  
+  # Ajouter un score de risque global
+  if [alert_score] {
+    if [alert_score] >= "8" {
+      mutate { add_field => { "risk_level" => "critical" } }
+    } else if [alert_score] >= "6" {
+      mutate { add_field => { "risk_level" => "high" } }
+    } else if [alert_score] >= "4" {
+      mutate { add_field => { "risk_level" => "medium" } }
+    } else {
+      mutate { add_field => { "risk_level" => "low" } }
     }
-    
-    # Nettoyer les champs temporaires
-    mutate {
-      remove_field => [ "host", "port", "@version" ]
-    }
+  }
+  
+  # Standardiser les champs IP
+  if [src_ip] and ![client_ip] {
+    mutate { add_field => { "client_ip" => "%{src_ip}" } }
+  }
+  
+  # Nettoyer les champs temporaires
+  mutate {
+    remove_field => [ "host", "port" ]
   }
 }
 
@@ -374,7 +376,7 @@ output {
     }
   }
   
-  # Fallback
+  # Fallback pour autres types
   else {
     elasticsearch {
       hosts => ["192.168.2.124:9200"]
@@ -403,7 +405,7 @@ else
     exit 1
 fi
 
-# 8. CONFIGURER ELASTICSEARCH
+# 8. CONFIGURER ELASTICSEARCH POUR AUTO-CREATE INDEX
 print_status "8. Configuration Elasticsearch..."
 curl -X PUT "http://192.168.2.124:9200/_cluster/settings" -H "Content-Type: application/json" -d '{
   "persistent": {
@@ -529,15 +531,15 @@ print_status "=== INSTALLATION TERMINÉE ==="
 echo ""
 print_info "📊 RÉSUMÉ:"
 echo "✅ Ancienne config sauvegardée: $BACKUP_DIR"
-echo "✅ Nouvelle configuration installée (corrigée pour vos logs)"
+echo "✅ Nouvelle configuration installée"
 echo "✅ Tests de validation réussis"
 echo "✅ Service Logstash redémarré"
 echo "✅ Scripts de test créés"
 echo ""
-print_info "📁 CORRECTIONS APPORTÉES:"
-echo "   • Cowrie: eventid direct (plus de cowrie_data)"
-echo "   • HTTP: attack_type, severity, query_string pris en compte"
-echo "   • Timestamps: ISO8601 + format HTTP spécifique"
+print_info "📁 PIPELINES CONFIGURÉS:"
+echo "   • SSH Cowrie: Analyse eventid, GeoIP, MITRE ATT&CK"
+echo "   • HTTP: Classification attaques, OWASP, User-Agent"
+echo "   • FTP: Sessions JSON + logs texte parsés"
 echo ""
 print_info "📊 INDICES ELASTICSEARCH:"
 echo "   • honeypot-cowrie-YYYY.MM.dd"
@@ -547,10 +549,10 @@ echo ""
 print_warning "🎯 PROCHAINES ÉTAPES:"
 echo "1. Tester: /opt/test_honeypot_pipelines.sh"
 echo "2. Monitoring: /opt/monitor_honeypot_pipelines.sh"
-echo "3. Installer le nouveau sender honeypot"
+echo "3. Redémarrer le sender: systemctl restart honeypot-sender"
 echo "4. Surveiller: journalctl -u logstash -f"
 echo ""
-print_status "Pipelines Logstash corrigés installés avec succès !"
+print_status "Pipelines Logstash honeypot installés avec succès !"
 echo ""
 print_info "🔍 COMMANDES UTILES:"
 echo "   • Test pipelines: /opt/test_honeypot_pipelines.sh"
@@ -559,4 +561,4 @@ echo "   • Logs Logstash: journalctl -u logstash -f"
 echo "   • API Logstash: curl http://192.168.2.124:9600/"
 
 echo ""
-echo "$(date): Pipelines Logstash honeypot corrigés installés" >> /var/log/elk-honeypot-install.log
+echo "$(date): Pipelines Logstash honeypot installés" >> /var/log/elk-honeypot-install.log
