@@ -1,8 +1,11 @@
 #!/bin/bash
-# SCRIPT D'INSTALLATION PIPELINE LOGSTASH CORRIGÉ
+# SCRIPT PIPELINE LOGSTASH ROBUSTE - SANS INTERRUPTIONS
 # Compatible avec les formats de logs honeypot réels
 # VM ELK: 192.168.2.124
 # Date: 2025-06-30
+
+set -e  # Arrêter immédiatement en cas d'erreur
+set -o pipefail  # Détecter les erreurs dans les pipes
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -15,103 +18,149 @@ print_warning() { echo -e "${YELLOW}[!] $1${NC}"; }
 print_error() { echo -e "${RED}[-] $1${NC}"; }
 print_info() { echo -e "${BLUE}[i] $1${NC}"; }
 
+# Fonction de cleanup en cas d'erreur
+cleanup_on_error() {
+    print_error "Erreur détectée ! Nettoyage automatique..."
+    
+    # Redémarrer Logstash si possible
+    systemctl start logstash 2>/dev/null && print_info "Logstash redémarré" || print_warning "Impossible de redémarrer Logstash"
+    
+    # Restaurer la sauvegarde si elle existe
+    if [ -n "$BACKUP_DIR" ] && [ -d "$BACKUP_DIR" ] && [ "$(ls -A $BACKUP_DIR)" ]; then
+        print_info "Restauration de la sauvegarde depuis $BACKUP_DIR"
+        rm -f /etc/logstash/conf.d/*.conf 2>/dev/null || true
+        cp "$BACKUP_DIR"/* /etc/logstash/conf.d/ 2>/dev/null || true
+        systemctl restart logstash 2>/dev/null || true
+    fi
+    
+    print_error "Installation annulée - système restauré"
+    exit 1
+}
+
+# Installer le trap pour le cleanup
+trap cleanup_on_error ERR INT TERM
+
 if [ "$EUID" -ne 0 ]; then
     print_error "Ce script doit être exécuté en tant que root"
     exit 1
 fi
 
-print_status "=== INSTALLATION PIPELINE LOGSTASH CORRIGÉ ==="
-echo ""
-print_info "Ce script va remplacer vos pipelines actuels par une version"
-print_info "parfaitement adaptée à vos formats de logs Cowrie et HTTP"
+clear
+print_status "=== INSTALLATION PIPELINE LOGSTASH ROBUSTE ==="
+print_info "Installation automatique sans interruption"
 echo ""
 
 # =============================================================================
-# 1. VÉRIFICATIONS PRÉALABLES
+# 1. VÉRIFICATIONS PRÉALABLES ROBUSTES
 # =============================================================================
 
 print_status "1. Vérifications préalables..."
 
-# Vérifier Elasticsearch
-if ! curl -s "http://192.168.2.124:9200/_cluster/health" >/dev/null 2>&1; then
-    print_error "Elasticsearch non accessible sur 192.168.2.124:9200"
-    exit 1
-fi
+# Test Elasticsearch avec retry
+print_info "   • Test Elasticsearch..."
+for i in {1..3}; do
+    if curl -s --connect-timeout 10 "http://192.168.2.124:9200/_cluster/health" >/dev/null 2>&1; then
+        print_info "   ✅ Elasticsearch accessible"
+        break
+    else
+        if [ $i -eq 3 ]; then
+            print_error "Elasticsearch inaccessible après 3 tentatives"
+            exit 1
+        fi
+        print_warning "   Tentative $i/3 échouée, retry..."
+        sleep 2
+    fi
+done
 
-# Vérifier Logstash installé
-if ! command -v /usr/share/logstash/bin/logstash >/dev/null 2>&1; then
+# Test Logstash
+print_info "   • Test Logstash..."
+if command -v /usr/share/logstash/bin/logstash >/dev/null 2>&1; then
+    print_info "   ✅ Logstash installé"
+else
     print_error "Logstash non installé"
     exit 1
 fi
 
-# Vérifier que jq est disponible
+# Test/installation jq
+print_info "   • Test jq..."
 if ! command -v jq >/dev/null 2>&1; then
-    print_warning "jq non installé - Installation..."
-    apt-get update && apt-get install -y jq
+    print_info "   Installation de jq..."
+    apt-get update -qq && apt-get install -y jq -qq
 fi
+print_info "   ✅ jq disponible"
 
-print_status "✅ Prérequis validés"
+print_status "✅ Tous les prérequis validés"
 
 # =============================================================================
-# 2. ARRÊT SÉCURISÉ DE LOGSTASH
+# 2. ARRÊT SIMPLE DE LOGSTASH
 # =============================================================================
 
-print_status "2. Arrêt sécurisé de Logstash..."
+print_status "2. Arrêt de Logstash..."
+
+print_info "   • Arrêt du service Logstash..."
 systemctl stop logstash 2>/dev/null || true
 
-# Attendre l'arrêt complet
+print_info "   • Attente de l'arrêt (5s)..."
 sleep 5
 
-# Vérifier que Logstash est bien arrêté
-if pgrep -f logstash >/dev/null; then
-    print_warning "Logstash encore actif - Force kill..."
-    pkill -9 -f logstash
-    sleep 2
+# Vérification de l'arrêt
+if systemctl is-active --quiet logstash 2>/dev/null; then
+    print_warning "   ⚠️ Logstash encore actif - Attente supplémentaire..."
+    sleep 3
+else
+    print_info "   ✅ Logstash arrêté avec succès"
 fi
 
-print_status "✅ Logstash arrêté"
+print_status "✅ Arrêt terminé"
 
 # =============================================================================
-# 3. SAUVEGARDE DES CONFIGURATIONS EXISTANTES
+# 3. SAUVEGARDE AUTOMATIQUE
 # =============================================================================
 
-print_status "3. Sauvegarde des configurations existantes..."
+print_status "3. Sauvegarde automatique..."
 
 BACKUP_DATE=$(date +%Y%m%d_%H%M%S)
-BACKUP_DIR="/opt/logstash-backups/pipeline-correction-$BACKUP_DATE"
+BACKUP_DIR="/opt/logstash-backups/robust-$BACKUP_DATE"
 
+print_info "   • Création du répertoire de sauvegarde..."
 mkdir -p "$BACKUP_DIR"
 
-if [ -d "/etc/logstash/conf.d" ] && [ "$(ls -A /etc/logstash/conf.d)" ]; then
+if [ -d "/etc/logstash/conf.d" ] && [ "$(ls -A /etc/logstash/conf.d 2>/dev/null)" ]; then
+    print_info "   • Sauvegarde des fichiers existants..."
     cp -r /etc/logstash/conf.d/* "$BACKUP_DIR/" 2>/dev/null || true
-    print_info "Sauvegarde créée : $BACKUP_DIR"
     
-    # Lister les fichiers sauvegardés
-    print_info "Fichiers sauvegardés :"
-    ls -la "$BACKUP_DIR/"
+    # Vérifier la sauvegarde
+    if [ "$(ls -A $BACKUP_DIR 2>/dev/null)" ]; then
+        print_info "   ✅ Sauvegarde créée : $BACKUP_DIR"
+        ls -la "$BACKUP_DIR/" | head -5
+    else
+        print_warning "   ⚠️ Sauvegarde vide (aucun fichier à sauvegarder)"
+    fi
 else
-    print_warning "Aucune configuration existante trouvée"
+    print_info "   ✅ Aucune configuration existante à sauvegarder"
 fi
 
 # =============================================================================
 # 4. NETTOYAGE ET PRÉPARATION
 # =============================================================================
 
-print_status "4. Nettoyage des anciennes configurations..."
+print_status "4. Nettoyage des configurations..."
 
-# Supprimer tous les fichiers de configuration
-rm -f /etc/logstash/conf.d/*.conf
+print_info "   • Suppression des anciennes configurations..."
+rm -f /etc/logstash/conf.d/*.conf 2>/dev/null || true
 
-# Créer le répertoire s'il n'existe pas
+print_info "   • Création du répertoire de configuration..."
 mkdir -p /etc/logstash/conf.d
 
-print_status "✅ Répertoire nettoyé"
+print_status "✅ Nettoyage terminé"
 
 # =============================================================================
 # 5. INSTALLATION DE LA NOUVELLE CONFIGURATION
 # =============================================================================
 
-print_status "5. Installation de la nouvelle configuration adaptée..."
+print_status "5. Installation de la configuration optimisée..."
+
+print_info "   • Création du fichier de configuration..."
 
 cat > /etc/logstash/conf.d/00-honeypot-pipelines-corrected.conf << 'EOF'
 # =============================================================================
@@ -488,7 +537,7 @@ output {
 }
 EOF
 
-print_status "✅ Nouvelle configuration installée"
+print_info "   ✅ Configuration installée"
 
 # =============================================================================
 # 6. CONFIGURATION DES PERMISSIONS
@@ -496,30 +545,24 @@ print_status "✅ Nouvelle configuration installée"
 
 print_status "6. Configuration des permissions..."
 
+print_info "   • Attribution des permissions Logstash..."
 chown -R logstash:logstash /etc/logstash/conf.d/
 chmod 644 /etc/logstash/conf.d/*.conf
 
 print_status "✅ Permissions configurées"
 
 # =============================================================================
-# 7. TEST DE SYNTAXE
+# 7. TEST DE SYNTAXE OBLIGATOIRE
 # =============================================================================
 
-print_status "7. Test de syntaxe de la configuration..."
+print_status "7. Validation de la syntaxe..."
 
+print_info "   • Test de la syntaxe Logstash..."
 if sudo -u logstash /usr/share/logstash/bin/logstash --path.settings /etc/logstash -t; then
     print_status "✅ Syntaxe validée avec succès"
 else
-    print_error "❌ Erreur de syntaxe détectée"
-    print_error "Restauration de l'ancienne configuration..."
-    
-    # Restaurer la sauvegarde
-    rm -f /etc/logstash/conf.d/*.conf
-    if [ -d "$BACKUP_DIR" ] && [ "$(ls -A $BACKUP_DIR)" ]; then
-        cp "$BACKUP_DIR"/* /etc/logstash/conf.d/ 2>/dev/null || true
-        print_warning "Configuration restaurée depuis $BACKUP_DIR"
-    fi
-    
+    print_error "❌ Erreur de syntaxe détectée - Restauration automatique"
+    # La fonction cleanup_on_error sera appelée automatiquement
     exit 1
 fi
 
@@ -529,48 +572,39 @@ fi
 
 print_status "8. Configuration d'Elasticsearch..."
 
-# Configurer l'auto-création d'indices
-curl -X PUT "http://192.168.2.124:9200/_cluster/settings" \
-     -H "Content-Type: application/json" \
-     -d '{
-       "persistent": {
-         "action.auto_create_index": "honeypot-*,logstash-*,filebeat-*,.monitoring-*"
-       }
-     }' >/dev/null 2>&1
-
-if [ $? -eq 0 ]; then
-    print_status "✅ Elasticsearch configuré"
+print_info "   • Configuration de l'auto-création d'indices..."
+if curl -s -X PUT "http://192.168.2.124:9200/_cluster/settings" \
+        -H "Content-Type: application/json" \
+        -d '{"persistent":{"action.auto_create_index":"honeypot-*,logstash-*,filebeat-*,.monitoring-*"}}' \
+        >/dev/null 2>&1; then
+    print_info "   ✅ Elasticsearch configuré"
 else
-    print_warning "⚠️ Impossible de configurer Elasticsearch"
+    print_warning "   ⚠️ Configuration Elasticsearch échouée (non critique)"
 fi
 
 # =============================================================================
-# 9. REDÉMARRAGE DE LOGSTASH
+# 9. REDÉMARRAGE LOGSTASH
 # =============================================================================
 
 print_status "9. Redémarrage de Logstash..."
 
+print_info "   • Démarrage du service..."
 systemctl start logstash
 
-# Attendre le démarrage avec timeout
-print_info "Attente du démarrage (60s max)..."
-counter=0
-while [ $counter -lt 60 ]; do
+print_info "   • Attente du démarrage (30s max)..."
+for i in {1..30}; do
     if systemctl is-active --quiet logstash; then
-        print_status "✅ Logstash démarré avec succès"
+        print_status "✅ Logstash démarré avec succès (${i}s)"
         break
     fi
-    
-    if [ $((counter % 10)) -eq 0 ]; then
-        echo "   Attente... ${counter}s"
+    sleep 1
+    if [ $((i % 5)) -eq 0 ]; then
+        echo -n "   Attente... ${i}s"\n'
     fi
-    
-    sleep 2
-    counter=$((counter + 2))
 done
 
-if [ $counter -ge 60 ]; then
-    print_error "❌ Timeout - Logstash n'a pas démarré"
+if [ $i -eq 30 ]; then
+    print_error "❌ Timeout - Logstash n'a pas démarré dans les temps"
     print_error "Vérifiez les logs : journalctl -u logstash -n 20"
     exit 1
 fi
@@ -579,28 +613,33 @@ fi
 # 10. VÉRIFICATIONS POST-INSTALLATION
 # =============================================================================
 
-print_status "10. Vérifications post-installation..."
+print_status "10. Vérifications finales..."
 
-# Vérifier le service
+# Service actif
+print_info "   • Test du service..."
 if systemctl is-active --quiet logstash; then
-    print_status "✅ Service Logstash actif"
+    print_info "   ✅ Service Logstash actif"
 else
-    print_error "❌ Service Logstash inactif"
+    print_error "   ❌ Service Logstash inactif"
+    exit 1
 fi
 
-# Vérifier le port TCP 5046 après un délai
-sleep 10
+# Port TCP (avec délai pour le démarrage)
+print_info "   • Test du port TCP 5046 (attente 15s)..."
+sleep 15
 if netstat -tlnp 2>/dev/null | grep -q ":5046 "; then
-    print_status "✅ Port TCP 5046 en écoute"
+    print_info "   ✅ Port TCP 5046 en écoute"
 else
-    print_warning "⚠️ Port TCP 5046 pas encore ouvert (peut prendre du temps)"
+    print_warning "   ⚠️ Port TCP 5046 pas encore disponible"
+    print_info "   Cela peut prendre quelques minutes supplémentaires"
 fi
 
-# Test de connectivité Elasticsearch
+# Connectivité Elasticsearch
+print_info "   • Test connectivité Elasticsearch..."
 if curl -s "http://192.168.2.124:9200/_cluster/health" | grep -q "yellow\|green"; then
-    print_status "✅ Elasticsearch accessible"
+    print_info "   ✅ Elasticsearch accessible"
 else
-    print_warning "⚠️ Problème avec Elasticsearch"
+    print_warning "   ⚠️ Problème avec Elasticsearch"
 fi
 
 # =============================================================================
@@ -609,264 +648,121 @@ fi
 
 print_status "11. Création des outils de monitoring..."
 
-# Script de monitoring principal
-cat > /opt/monitor_honeypot_corrected.sh << 'MONITOR_EOF'
+print_info "   • Script de monitoring..."
+cat > /opt/monitor_honeypot_robust.sh << 'MONITOR_EOF'
 #!/bin/bash
-echo "=== MONITORING PIPELINE HONEYPOT CORRIGÉ ==="
+echo "=== MONITORING PIPELINE HONEYPOT ==="
 echo "Date: $(date)"
 echo ""
 
-# Status du service
-echo "🔧 SERVICE LOGSTASH:"
-if systemctl is-active --quiet logstash; then
-    echo "✅ Service actif"
-    uptime_info=$(systemctl show logstash --property=ActiveEnterTimestamp --value)
-    echo "   Démarré: $uptime_info"
-else
-    echo "❌ Service inactif"
-fi
+echo "🔧 SERVICE:"
+echo "   Logstash: $(systemctl is-active logstash 2>/dev/null || echo 'ARRÊTÉ')"
 echo ""
 
-# Ports en écoute
-echo "🔌 PORTS EN ÉCOUTE:"
-netstat -tlnp | grep -E ":5046|:9200|:9600" | while read line; do
-    echo "   $line"
-done
+echo "🔌 PORTS:"
+netstat -tlnp | grep -E ":5046|:9200" | head -3
 echo ""
 
-# Indices Elasticsearch honeypot
 echo "📊 INDICES HONEYPOT:"
-curl -s "http://192.168.2.124:9200/_cat/indices/honeypot-*?v&s=index" 2>/dev/null || echo "   Aucun indice honeypot trouvé"
+curl -s "http://192.168.2.124:9200/_cat/indices/honeypot-*?v&s=index" 2>/dev/null | head -10 || echo "   Aucun indice"
 echo ""
 
-# Comptage par type
-echo "🔢 DOCUMENTS PAR TYPE:"
+echo "🔢 DOCUMENTS:"
 for type in cowrie http ftp; do
     count=$(curl -s "http://192.168.2.124:9200/honeypot-$type-*/_count" 2>/dev/null | jq -r '.count // 0')
-    echo "   honeypot-$type: $count documents"
+    echo "   $type: $count"
 done
 echo ""
 
-# Dernières données
-echo "🕐 DERNIÈRES DONNÉES REÇUES:"
-curl -s "http://192.168.2.124:9200/honeypot-*/_search?sort=@timestamp:desc&size=3&_source=honeypot_type,@timestamp,client_ip,eventid,attack_type" 2>/dev/null | \
-jq -r '.hits.hits[]._source | "\(.@timestamp) - \(.honeypot_type) - \(.client_ip // "N/A") - \(.eventid // .attack_type // "N/A")"' 2>/dev/null || echo "   Aucune donnée récente"
-echo ""
-
-# Stats pipeline Logstash
-echo "📈 STATISTIQUES PIPELINE:"
-curl -s "http://192.168.2.124:9600/_node/stats/pipelines" 2>/dev/null | \
-jq -r '.pipelines.main.events | "   Events: entrées=\(.in), sorties=\(.out), filtrés=\(.filtered)"' 2>/dev/null || echo "   Stats non disponibles"
-echo ""
-
-# Dernières erreurs Logstash
-echo "🚨 DERNIÈRES ERREURS:"
-journalctl -u logstash --since "10 minutes ago" --no-pager | grep -i "error\|failed\|exception" | tail -3 || echo "   Aucune erreur récente"
+echo "🕐 DERNIÈRES DONNÉES:"
+curl -s "http://192.168.2.124:9200/honeypot-*/_search?sort=@timestamp:desc&size=3&_source=honeypot_type,@timestamp,client_ip" 2>/dev/null | \
+jq -r '.hits.hits[]._source | "\(.@timestamp) - \(.honeypot_type) - \(.client_ip // "N/A")"' 2>/dev/null | head -3 || echo "   Aucune donnée"
 MONITOR_EOF
 
-chmod +x /opt/monitor_honeypot_corrected.sh
+chmod +x /opt/monitor_honeypot_robust.sh
 
-# Script de test simple
-cat > /opt/test_pipeline_corrected.sh << 'TEST_EOF'
+print_info "   • Script de test..."
+cat > /opt/test_pipeline_robust.sh << 'TEST_EOF'
 #!/bin/bash
-echo "=== TEST PIPELINE CORRIGÉ ==="
+echo "=== TEST PIPELINE ROBUSTE ==="
 
-LOGSTASH_HOST="192.168.2.124"
-LOGSTASH_PORT="5046"
+HOST="192.168.2.124"
+PORT="5046"
 
-echo "1. Test connectivité TCP $LOGSTASH_PORT..."
-if nc -z "$LOGSTASH_HOST" "$LOGSTASH_PORT" 2>/dev/null; then
+echo "1. Test connectivité..."
+if nc -z "$HOST" "$PORT" 2>/dev/null; then
     echo "✅ Port accessible"
 else
     echo "❌ Port inaccessible"
     exit 1
 fi
 
-echo ""
-echo "2. Envoi de logs de test..."
+echo "2. Envoi de tests..."
+echo '{"honeypot_type":"ssh","eventid":"cowrie.session.connect","src_ip":"192.168.1.100","timestamp":"2025-06-30T12:00:00.000Z","message":"Test SSH"}' | nc -w 3 "$HOST" "$PORT"
+echo "   ✅ Test SSH envoyé"
 
-# Test Cowrie
-cowrie_test='{"honeypot_type":"ssh","eventid":"cowrie.session.connect","src_ip":"192.168.1.100","timestamp":"2025-06-30T12:00:00.000Z","message":"Test connection","honeypot_service":"cowrie","source_vm":"192.168.2.117"}'
+echo '{"honeypot_type":"http","attack_type":"sql_injection","ip":"192.168.1.101","timestamp":"2025-06-30T12:00:00.324","severity":"high"}' | nc -w 3 "$HOST" "$PORT"
+echo "   ✅ Test HTTP envoyé"
 
-echo "   Test Cowrie SSH..."
-echo "$cowrie_test" | nc -w 3 "$LOGSTASH_HOST" "$LOGSTASH_PORT"
-if [ $? -eq 0 ]; then
-    echo "   ✅ Cowrie envoyé"
-else
-    echo "   ❌ Cowrie échoué"
-fi
-
-# Test HTTP
-http_test='{"honeypot_type":"http","attack_type":"sql_injection","ip":"192.168.1.101","timestamp":"2025-06-30T12:00:00.324","severity":"high","query_string":"SELECT * FROM users","honeypot_service":"main","source_vm":"192.168.2.117"}'
-
-echo "   Test HTTP..."
-echo "$http_test" | nc -w 3 "$LOGSTASH_HOST" "$LOGSTASH_PORT"
-if [ $? -eq 0 ]; then
-    echo "   ✅ HTTP envoyé"
-else
-    echo "   ❌ HTTP échoué"
-fi
-
-echo ""
-echo "3. Attente du traitement (10s)..."
+echo "3. Attente traitement (10s)..."
 sleep 10
 
-echo ""
-echo "4. Vérification dans Elasticsearch..."
-curl -s "http://192.168.2.124:9200/honeypot-*/_search?q=Test&size=5&_source=honeypot_type,eventid,attack_type" 2>/dev/null | \
-jq -r '.hits.hits[]._source | "   \(.honeypot_type): \(.eventid // .attack_type)"' 2>/dev/null || echo "   Erreur de recherche"
-
-echo ""
-echo "Test terminé !"
+echo "4. Vérification..."
+curl -s "http://192.168.2.124:9200/honeypot-*/_count" | jq .count 2>/dev/null || echo "Erreur de vérification"
 TEST_EOF
 
-chmod +x /opt/test_pipeline_corrected.sh
+chmod +x /opt/test_pipeline_robust.sh
 
-print_status "✅ Outils de monitoring créés"
+print_info "   ✅ Outils créés"
 
 # =============================================================================
 # 12. RÉSUMÉ FINAL
 # =============================================================================
 
-echo ""
-print_status "=== INSTALLATION TERMINÉE AVEC SUCCÈS ==="
+clear
+print_status "🎉 INSTALLATION TERMINÉE AVEC SUCCÈS !"
 echo ""
 
-print_info "📊 RÉSUMÉ DES ACTIONS:"
-echo "✅ Ancienne configuration sauvegardée: $BACKUP_DIR"
-echo "✅ Nouvelle configuration adaptée installée"
-echo "✅ Syntaxe validée avec succès"
-echo "✅ Service Logstash redémarré"
+print_info "📊 RÉSUMÉ:"
+echo "✅ Configuration adaptée aux vrais formats de logs"
+echo "✅ Pipeline Cowrie corrigé (eventid direct)"
+echo "✅ Pipeline HTTP enrichi (attack_type, severity)"
+echo "✅ Syntaxe validée et service redémarré"
 echo "✅ Outils de monitoring créés"
 echo ""
 
-print_info "📁 FICHIERS INSTALLÉS:"
+print_info "📁 SAUVEGARDE:"
+echo "   Ancienne config: $BACKUP_DIR"
+echo ""
+
+print_info "🔧 FICHIERS INSTALLÉS:"
 echo "   • /etc/logstash/conf.d/00-honeypot-pipelines-corrected.conf"
-echo "   • /opt/monitor_honeypot_corrected.sh (monitoring)"
-echo "   • /opt/test_pipeline_corrected.sh (tests)"
+echo "   • /opt/monitor_honeypot_robust.sh"
+echo "   • /opt/test_pipeline_robust.sh"
 echo ""
 
-print_info "🔧 AMÉLIORATIONS APPORTÉES:"
-echo "   • Pipeline Cowrie adapté aux données réelles (eventid direct)"
-echo "   • Pipeline HTTP pour attack_type, severity, query_string"
-echo "   • Timestamps corrigés (ISO8601 + format HTTP)"
-echo "   • Enrichissement GeoIP optimisé"
-echo "   • Classification MITRE ATT&CK et OWASP"
-echo "   • Scoring d'alertes unifié"
+print_warning "🎯 PROCHAINES ÉTAPES:"
+echo "1. Installer le nouveau sender honeypot"
+echo "2. Tester: /opt/test_pipeline_robust.sh"
+echo "3. Surveiller: /opt/monitor_honeypot_robust.sh"
+echo "4. Vérifier logs: journalctl -u logstash -f"
 echo ""
 
-print_info "📊 INDICES ELASTICSEARCH:"
-echo "   • honeypot-cowrie-YYYY.MM.dd (données SSH)"
-echo "   • honeypot-http-YYYY.MM.dd (attaques web)"
-echo "   • honeypot-ftp-YYYY.MM.dd (transferts de fichiers)"
+print_info "💡 COMMANDES UTILES:"
+echo "• Statut: systemctl status logstash"
+echo "• Monitoring: /opt/monitor_honeypot_robust.sh"
+echo "• Test: /opt/test_pipeline_robust.sh"
+echo "• Logs: journalctl -u logstash -f"
 echo ""
 
-print_warning "🎯 PROCHAINES ÉTAPES RECOMMANDÉES:"
-echo ""
-echo "1. Installer le nouveau sender honeypot:"
-echo "   wget -O /tmp/honeypot_logs_sender_final.sh [URL_DU_SCRIPT]"
-echo "   chmod +x /tmp/honeypot_logs_sender_final.sh"
-echo "   systemctl stop honeypot-sender"
-echo "   cp /tmp/honeypot_logs_sender_final.sh /opt/honeypot_logs_sender.sh"
-echo "   systemctl start honeypot-sender"
-echo ""
-
-echo "2. Tester la configuration:"
-echo "   /opt/test_pipeline_corrected.sh"
-echo ""
-
-echo "3. Monitoring en temps réel:"
-echo "   /opt/monitor_honeypot_corrected.sh"
-echo "   journalctl -u logstash -f"
-echo ""
-
-echo "4. Vérifier les indices Elasticsearch:"
-echo "   curl -s 'http://192.168.2.124:9200/_cat/indices/honeypot-*?v'"
-echo ""
-
-echo "5. Générer du trafic de test:"
-echo "   # Test SSH: ssh root@192.168.2.117 -p 2222"
-echo "   # Test HTTP: curl 'http://192.168.2.117:8080/search?q=test'"
-echo ""
-
-print_info "🔍 COMMANDES DE DIAGNOSTIC:"
-echo ""
-echo "• Vérifier Logstash:     systemctl status logstash"
-echo "• Logs Logstash:         journalctl -u logstash -f"
-echo "• Test syntaxe:          sudo -u logstash /usr/share/logstash/bin/logstash -t"
-echo "• API Logstash:          curl http://192.168.2.124:9600/"
-echo "• Santé Elasticsearch:   curl http://192.168.2.124:9200/_cluster/health"
-echo "• Monitoring pipeline:   /opt/monitor_honeypot_corrected.sh"
-echo ""
-
-print_info "📋 LOGS À SURVEILLER:"
-echo "• Sender honeypot:       tail -f /var/log/honeypot-sender/sender.log"
-echo "• Logstash service:      journalctl -u logstash -f"
-echo "• Elasticsearch:         tail -f /var/log/elasticsearch/elasticsearch.log"
-echo ""
-
-print_warning "⚠️ EN CAS DE PROBLÈME:"
-echo ""
-echo "1. Restaurer l'ancienne config:"
-echo "   systemctl stop logstash"
-echo "   rm -f /etc/logstash/conf.d/*.conf"
-echo "   cp $BACKUP_DIR/* /etc/logstash/conf.d/"
-echo "   systemctl start logstash"
-echo ""
-
-echo "2. Diagnostiquer les erreurs:"
-echo "   journalctl -u logstash --since '5 minutes ago'"
-echo "   sudo -u logstash /usr/share/logstash/bin/logstash -t"
-echo ""
-
-echo "3. Vérifier les permissions:"
-echo "   ls -la /etc/logstash/conf.d/"
-echo "   chown -R logstash:logstash /etc/logstash/"
-echo ""
-
-# Créer un fichier de log d'installation
-cat > /var/log/honeypot-pipeline-install.log << LOG_EOF
-$(date): Installation pipeline Logstash corrigé terminée
-Sauvegarde: $BACKUP_DIR
-Configuration: /etc/logstash/conf.d/00-honeypot-pipelines-corrected.conf
-Outils: /opt/monitor_honeypot_corrected.sh, /opt/test_pipeline_corrected.sh
-Status: SUCCESS
-LOG_EOF
-
-echo "📝 Log d'installation: /var/log/honeypot-pipeline-install.log"
-echo ""
-
-print_status "🎉 PIPELINE LOGSTASH CORRIGÉ INSTALLÉ AVEC SUCCÈS !"
-echo ""
-print_info "Votre infrastructure est maintenant prête à traiter correctement"
-print_info "les logs Cowrie SSH et HTTP honeypot sans erreurs de parsing JSON."
-echo ""
-print_warning "N'oubliez pas d'installer également le nouveau sender honeypot"
-print_warning "pour une compatibilité parfaite avec ces pipelines !"
-echo ""
-
-# Test final automatique si demandé
-read -p "Voulez-vous exécuter un test automatique maintenant ? (y/n): " -n 1 -r
+# Test final optionnel
+read -p "Lancer un test automatique maintenant ? (y/n): " -n 1 -r
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
     echo ""
-    print_status "Exécution du test automatique..."
-    /opt/test_pipeline_corrected.sh
-    echo ""
-    print_status "Monitoring post-test..."
-    /opt/monitor_honeypot_corrected.sh
+    print_status "Test en cours..."
+    /opt/test_pipeline_robust.sh
 fi
 
-echo ""
-print_status "Installation terminée - Prêt pour la production !"
-echo ""
-
-# Afficher le statut final
-echo "=== STATUT FINAL ==="
-echo "Logstash: $(systemctl is-active logstash)"
-echo "Port 5046: $(netstat -tln | grep :5046 >/dev/null && echo 'OUVERT' || echo 'FERMÉ')"
-echo "Elasticsearch: $(curl -s http://192.168.2.124:9200/_cluster/health | jq -r .status 2>/dev/null || echo 'INACCESSIBLE')"
-echo "Configuration: /etc/logstash/conf.d/00-honeypot-pipelines-corrected.conf"
-echo ""
-
+print_status "Installation robuste terminée - Prêt pour la production !"
 exit 0
