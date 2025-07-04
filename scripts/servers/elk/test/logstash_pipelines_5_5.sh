@@ -48,17 +48,6 @@ print_status "Arrêt complet de Logstash..."
 systemctl stop logstash
 sleep 5
 
-# S'assurer qu'aucun processus Logstash ne tourne
-pkill -f logstash 2>/dev/null || true
-sleep 3
-
-# Vérifier qu'il n'y a plus de processus
-if pgrep -f logstash >/dev/null; then
-    print_warning "Processus Logstash encore actifs, arrêt forcé..."
-    pkill -9 -f logstash
-    sleep 2
-fi
-
 print_status "✅ Logstash complètement arrêté"
 
 # ================================
