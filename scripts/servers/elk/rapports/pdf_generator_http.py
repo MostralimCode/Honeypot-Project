@@ -3,7 +3,6 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from datetime import datetime
 import json
-import glob
 import os
 
 class HTTPHoneypotPDFReport:
@@ -15,54 +14,63 @@ class HTTPHoneypotPDFReport:
             'total_events': 0,
             'unique_ips': set(),
             'attack_types': {},
-            'top_payloads': {},
-            'countries': {},
-            'user_agents': {}
+            'severity_levels': {},
+            'top_paths': {},
+            'top_user_agents': {},
+            'methods': {}
         }
         
-        # Chercher les logs HTTP (ajustez le chemin selon votre structure)
-        log_patterns = [
-            "/root/honeypot-http/logs/*.log",
-            "/var/log/honeypot-http/*.log",
-            "/opt/honeypot-http/logs/*.log"
+        # Vos fichiers de logs HTTP exacts
+        log_files = [
+            "/var/log/honeypot/api_access.log",
+            "/var/log/honeypot/critical_alerts.log", 
+            "/var/log/honeypot/sql_injection.log",
+            "/var/log/honeypot/http_honeypot.log"
         ]
         
-        log_files = []
-        for pattern in log_patterns:
-            log_files.extend(glob.glob(pattern))
-        
         for log_file in log_files:
-            try:
-                with open(log_file, 'r') as f:
-                    for line in f:
-                        try:
-                            # Vos logs HTTP sont en JSON d'après votre code
-                            data = json.loads(line.strip())
-                            stats['total_events'] += 1
-                            
-                            if 'ip' in data:
-                                stats['unique_ips'].add(data['ip'])
-                            
-                            if 'attack_type' in data:
-                                attack_type = data['attack_type']
-                                stats['attack_types'][attack_type] = stats['attack_types'].get(attack_type, 0) + 1
-                            
-                            if 'payload' in data and data['payload']:
-                                payload = data['payload'][:50]  # Tronquer pour le rapport
-                                stats['top_payloads'][payload] = stats['top_payloads'].get(payload, 0) + 1
-                            
-                            if 'country' in data:
-                                country = data['country']
-                                stats['countries'][country] = stats['countries'].get(country, 0) + 1
-                            
-                            if 'user_agent' in data and data['user_agent']:
-                                ua = data['user_agent'][:30]  # Tronquer
-                                stats['user_agents'][ua] = stats['user_agents'].get(ua, 0) + 1
+            if os.path.exists(log_file):
+                try:
+                    with open(log_file, 'r') as f:
+                        for line in f:
+                            try:
+                                data = json.loads(line.strip())
+                                stats['total_events'] += 1
                                 
-                        except json.JSONDecodeError:
-                            continue
-            except FileNotFoundError:
-                continue
+                                # IP unique
+                                if 'ip' in data:
+                                    stats['unique_ips'].add(data['ip'])
+                                
+                                # Type d'attaque
+                                if 'attack_type' in data:
+                                    attack_type = data['attack_type']
+                                    stats['attack_types'][attack_type] = stats['attack_types'].get(attack_type, 0) + 1
+                                
+                                # Sévérité
+                                if 'severity' in data:
+                                    severity = data['severity']
+                                    stats['severity_levels'][severity] = stats['severity_levels'].get(severity, 0) + 1
+                                
+                                # Paths les plus attaqués
+                                if 'path' in data:
+                                    path = data['path']
+                                    stats['top_paths'][path] = stats['top_paths'].get(path, 0) + 1
+                                
+                                # User agents
+                                if 'user_agent' in data and data['user_agent']:
+                                    ua = data['user_agent'][:40]  # Tronquer
+                                    stats['top_user_agents'][ua] = stats['top_user_agents'].get(ua, 0) + 1
+                                
+                                # Méthodes HTTP
+                                if 'method' in data:
+                                    method = data['method']
+                                    stats['methods'][method] = stats['methods'].get(method, 0) + 1
+                                    
+                            except json.JSONDecodeError:
+                                continue
+                except Exception as e:
+                    print(f"Erreur lecture {log_file}: {e}")
+                    continue
                 
         if stats['total_events'] == 0:
             print("⚠️  Aucun log HTTP trouvé")
@@ -94,10 +102,10 @@ class HTTPHoneypotPDFReport:
         c.drawString(70, y, f"• {len(stats['unique_ips'])} IPs uniques")
         y -= 40
         
-        # Top types d'attaques
+        # Types d'attaques
         if stats['attack_types']:
             c.setFont("Helvetica-Bold", 12)
-            c.drawString(70, y, "Types d'attaques web:")
+            c.drawString(70, y, "Types d'attaques:")
             y -= 20
             c.setFont("Helvetica", 10)
             for attack_type, count in sorted(stats['attack_types'].items(), key=lambda x: x[1], reverse=True)[:5]:
@@ -106,27 +114,27 @@ class HTTPHoneypotPDFReport:
         
         y -= 20
         
-        # Top payloads
-        if stats['top_payloads']:
+        # Sévérité
+        if stats['severity_levels']:
             c.setFont("Helvetica-Bold", 12)
-            c.drawString(70, y, "Payloads malveillants les plus fréquents:")
+            c.drawString(70, y, "Niveaux de sévérité:")
             y -= 20
-            c.setFont("Helvetica", 8)
-            for payload, count in sorted(stats['top_payloads'].items(), key=lambda x: x[1], reverse=True)[:5]:
-                c.drawString(90, y, f"• {payload}... ({count}x)")
-                y -= 12
+            c.setFont("Helvetica", 10)
+            for severity, count in sorted(stats['severity_levels'].items(), key=lambda x: x[1], reverse=True):
+                c.drawString(90, y, f"• {severity}: {count}")
+                y -= 15
         
         y -= 20
         
-        # Top pays
-        if stats['countries']:
+        # Paths les plus attaqués
+        if stats['top_paths']:
             c.setFont("Helvetica-Bold", 12)
-            c.drawString(70, y, "Pays d'origine des attaques:")
+            c.drawString(70, y, "Chemins les plus attaqués:")
             y -= 20
-            c.setFont("Helvetica", 10)
-            for country, count in sorted(stats['countries'].items(), key=lambda x: x[1], reverse=True)[:5]:
-                c.drawString(90, y, f"• {country}: {count}")
-                y -= 15
+            c.setFont("Helvetica", 9)
+            for path, count in sorted(stats['top_paths'].items(), key=lambda x: x[1], reverse=True)[:5]:
+                c.drawString(90, y, f"• {path}: {count}")
+                y -= 12
         
         c.save()
         print("✅ Rapport HTTP généré: rapport_http_honeypot.pdf")
