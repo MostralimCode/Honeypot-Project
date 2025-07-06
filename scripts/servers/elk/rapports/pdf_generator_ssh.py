@@ -21,11 +21,11 @@ class SSHHoneypotPDFReport:
             'countries': {}
         }
         
-        # Chemin vers les logs Cowrie
-        cowrie_log_dir = "/root/cowrie/var/log/cowrie"
+        # Chemin exact vers vos logs Cowrie
+        cowrie_log_dir = "/home/cowrie/cowrie/var/log/cowrie"
         
-        # Fichiers JSON de Cowrie
-        log_files = glob.glob(f"{cowrie_log_dir}/*.json*") + glob.glob(f"{cowrie_log_dir}/cowrie.json*")
+        # Fichiers JSON de Cowrie (tous les .json et .json.X)
+        log_files = glob.glob(f"{cowrie_log_dir}/cowrie.json*")
         
         for log_file in log_files:
             if os.path.exists(log_file):
@@ -59,14 +59,7 @@ class SSHHoneypotPDFReport:
                                     if 'input' in data:
                                         command = data['input'].split()[0] if data['input'].split() else data['input']
                                         stats['commands'][command] = stats['commands'].get(command, 0) + 1
-                                
-                                # Géolocalisation (si disponible)
-                                if 'src_ip' in data:
-                                    # Cowrie peut avoir des infos de géolocalisation
-                                    if 'country' in data:
-                                        country = data['country']
-                                        stats['countries'][country] = stats['countries'].get(country, 0) + 1
-                                    
+                                        
                             except json.JSONDecodeError:
                                 continue
                 except Exception as e:
