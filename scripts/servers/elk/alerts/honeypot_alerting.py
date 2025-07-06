@@ -2,25 +2,49 @@
 import requests
 import json
 import os
+from datetime import datetime
 from dotenv import load_dotenv
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from datetime import datetime, timedelta
-import time
 
-class HoneypotAlerting:
+class HoneypotDiscordAlerting:
     def __init__(self):
         load_dotenv()
-        self.elk_host = "192.168.2.124:9200"
         
-        # Configuration email (à personnaliser)
-        self.smtp_server = "mail.protonmail.ch"
-        self.smtp_port = 587
-        self.email_user = os.getenv('EMAIL_USER')
-        self.email_password = os.getenv('EMAIL_PASSWORD')
-        self.alert_recipient = os.getenv('ALERT_RECIPIENT')
-
+        self.elk_host = "localhost:9200"
+        self.discord_webhook = os.getenv('DISCORD_WEBHOOK_URL')
+        
+        if not self.discord_webhook:
+            print("⚠️  DISCORD_WEBHOOK_URL manquant dans .env")
+            self.discord_enabled = False
+        else:
+            self.discord_enabled = True
+            print("✅ Discord webhook configuré")
+    
+    def send_discord_alert(self, title, message, color=16711680):  # Rouge par défaut
+        """Envoie une alerte Discord"""
+        if not self.discord_enabled:
+            return
+            
+        embed = {
+            "embeds": [{
+                "title": f"🚨 {title}",
+                "description": message,
+                "color": color,
+                "timestamp": datetime.utcnow().isoformat(),
+                "footer": {
+                    "text": "Système de détection Honeypot"
+                }
+            }]
+        }
+        
+        try:
+            response = requests.post(self.discord_webhook, json=embed)
+            if response.status_code == 204:
+                print(f"✅ Alerte Discord envoyée: {title}")
+            else:
+                print(f"❌ Erreur Discord: {response.status_code}")
+        except Exception as e:
+            print(f"❌ Erreur envoi Discord: {e}")
+    
     def check_brute_force_attacks(self):
         """Détecte les attaques par force brute"""
         query = {
@@ -68,121 +92,24 @@ class HoneypotAlerting:
                     for attack in attacks:
                         ip = attack['key']
                         count = attack['doc_count']
-                        self.send_alert(
-                            f"🚨 ATTAQUE FORCE BRUTE",
-                            f"IP: {ip}\nNombre de tentatives: {count}\nDétectée à: {datetime.now()}"
-                        )
+                        
+                        message = f"**IP:** {ip}\n**Tentatives:** {count}\n**Détectée:** {datetime.now().strftime('%H:%M:%S')}"
+                        
+                        self.send_discord_alert("ATTAQUE FORCE BRUTE", message)
                         print(f"🚨 Alerte: Force brute depuis {ip} ({count} tentatives)")
                         
         except Exception as e:
             print(f"Erreur vérification force brute: {e}")
     
-    def check_sql_injection_attacks(self):
-        """Détecte les injections SQL"""
-        query = {
-            "query": {
-                "bool": {
-                    "must": [
-                        {
-                            "range": {
-                                "@timestamp": {
-                                    "gte": "now-5m"
-                                }
-                            }
-                        },
-                        {
-                            "term": {
-                                "attack_type": "sql_injection"
-                            }
-                        }
-                    ]
-                }
-            },
-            "aggs": {
-                "attacks_by_ip": {
-                    "terms": {
-                        "field": "ip.keyword",
-                        "size": 10
-                    }
-                }
-            }
-        }
-        
-        try:
-            response = requests.post(
-                f"http://{self.elk_host}/honeypot-*/_search",
-                json=query,
-                headers={'Content-Type': 'application/json'}
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                total_hits = data.get('hits', {}).get('total', {}).get('value', 0)
-                
-                if total_hits > 0:
-                    attacks = data.get('aggregations', {}).get('attacks_by_ip', {}).get('buckets', [])
-                    for attack in attacks:
-                        ip = attack['key']
-                        count = attack['doc_count']
-                        self.send_alert(
-                            f"🚨 INJECTION SQL DÉTECTÉE",
-                            f"IP: {ip}\nNombre d'attaques: {count}\nDétectée à: {datetime.now()}"
-                        )
-                        print(f"🚨 Alerte: Injection SQL depuis {ip} ({count} attaques)")
-                        
-        except Exception as e:
-            print(f"Erreur vérification SQL injection: {e}")
-    
-    def send_alert(self, subject, message):
-        """Envoie une alerte par email"""
-        try:
-            msg = MIMEMultipart()
-            msg['From'] = self.email_user
-            msg['To'] = self.alert_recipient
-            msg['Subject'] = f"[HONEYPOT ALERT] {subject}"
-            
-            body = f"""
-ALERTE SYSTÈME HONEYPOT
-=======================
-
-{message}
-
-Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-Source: Système de détection honeypot
-
-Vérifiez immédiatement les logs pour plus de détails.
-            """
-            
-            msg.attach(MIMEText(body, 'plain'))
-            
-            server = smtplib.SMTP(self.smtp_server, self.smtp_port)
-            server.starttls()
-            server.login(self.email_user, self.email_password)
-            text = msg.as_string()
-            server.sendmail(self.email_user, self.alert_recipient, text)
-            server.quit()
-            
-            print(f"✅ Alerte envoyée: {subject}")
-            
-        except Exception as e:
-            print(f"❌ Erreur envoi email: {e}")
-    
-    def run_monitoring(self):
-        """Lance la surveillance en continu"""
-        print("🔍 Démarrage du monitoring honeypot...")
-        while True:
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Vérification des alertes...")
-            
-            self.check_brute_force_attacks()
-            self.check_sql_injection_attacks()
-            
-            # Attendre 5 minutes avant la prochaine vérification
-            time.sleep(300)
+    def test_discord(self):
+        """Test du webhook Discord"""
+        self.send_discord_alert(
+            "TEST SYSTÈME", 
+            "Le système d'alertes honeypot fonctionne correctement !",
+            65280  # Vert
+        )
 
 if __name__ == "__main__":
-    alerting = HoneypotAlerting()
-    
-    # Test des alertes sans email
-    print("🧪 Test des alertes...")
+    alerting = HoneypotDiscordAlerting()
+    alerting.test_discord()
     alerting.check_brute_force_attacks()
-    alerting.check_sql_injection_attacks()
